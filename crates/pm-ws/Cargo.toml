@@ -1,0 +1,15 @@
+[package]
+name = "pm-ws"
+description = "Resilient websocket sessions (reconnect, keepalive, resubscribe) for Polymarket feeds"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true

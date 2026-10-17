@@ -1,0 +1,47 @@
+# pm-recorder configuration. Relative paths are resolved against this file's directory.
+data_dir = "../../data/live"
+
+[store]
+zstd_level = 6        # 3 = faster, 9+ = smaller; 6 compresses the CLOB feed ~10x
+flush_secs = 5        # max data lost on a crash
+
+[discovery]
+interval_secs = 60            # Gamma poll period; new markets are subscribed within this
+end_date_lookback_hours = 24
+ended_grace_secs = 1800       # keep recording 30 min after Gamma marks an event ended
+
+# Data goes to <data_dir>/<YYYY>/<MM>/<DD>/<category>/<key>/<stream>/<HH>.r<run>.jsonl.zst
+# Gamma tag ids: use the /sports primaryTagId (the `cs2` tag slug is NOT the CS2 league tag).
+# include_types / exclude_types filter on sportsMarketType; empty include = everything.
+# score_league: the live-score feed's leagueAbbreviation, if it differs from `key`.
+[[leagues]]
+category = "esports"
+key = "cs2"
+tag_id = 100780
+
+[[leagues]]
+category = "esports"
+key = "dota2"
+tag_id = 102366
+
+[[leagues]]
+category = "esports"
+key = "lol"
+tag_id = 65
+
+[clob]
+enabled = true
+max_assets_per_conn = 250
+custom_features = true        # also best_bid_ask / new_market / market_resolved
+book_snapshot_secs = 60       # top-of-book snapshot of each changed book (0 = off)
+book_snapshot_levels = 50
+keep_hashes = false          # true keeps price_change "hash" fields (3x the size)
+
+[activity]
+enabled = true
+only_tracked = true           # false = also record every other trade, under other/untracked
+
+[sports]
+enabled = true
+leagues = []                  # leagueAbbreviation filter; empty = all leagues (small feed).
+                              # Unconfigured leagues are stored under other/<leagueAbbreviation>.

@@ -1,0 +1,13 @@
+[package]
+name = "pm-store"
+description = "Append-only, hour-partitioned zstd JSONL storage for recorded feeds"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+zstd.workspace = true
