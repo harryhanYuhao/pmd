@@ -1,8 +1,20 @@
-# pm-recorder — user guide
+# pm — user guide
 
-`pm-recorder` records Polymarket order books, trades (with wallets), market metadata and live
-game scores for a configurable list of leagues. The data is written to compressed hourly files
-for offline research and backtesting.
+`pm` is one binary with a subcommand per task:
+
+| command | what it does | status |
+|---|---|---|
+| `pm record` | records Polymarket order books, trades (with wallets), market metadata and live game scores for a configurable list of leagues, into compressed hourly files | ready |
+| `pm audit` | summarises recorded data: size, runs, connection drops, gaps, damaged files. Read-only | ready |
+| `pm export` | converts recorded data into partitioned Parquet tables for analysis | ready |
+| `pm markets` | live overview of Polymarket: open / live events, volume, by category and league | ready |
+
+`pm --help` and `pm <command> --help` list every flag.
+
+Contents: [1. Build](#1-build) · [2. Record](#2-record) · [3. Configure](#3-configure) ·
+[4. Output](#4-output) · [5. Audit](#5-audit-the-recorded-data) ·
+[6. Export](#6-export-to-parquet) · [7. Markets](#7-live-market-overview) ·
+[8. Troubleshooting](#8-troubleshooting)
 
 ## 1. Build
 
@@ -10,18 +22,18 @@ Requires Rust ≥ 1.85 (edition 2024). No system libraries are needed (TLS is ru
 
 ```bash
 cd pm-rs
-cargo build --release              # binary: target/release/pm-recorder
+cargo build --release              # binary: target/release/pm
 cargo test --workspace             # optional
 ```
 
-## 2. Run
+## 2. Record
 
 ```bash
-./target/release/pm-recorder                                   # uses config/recorder.toml
-./target/release/pm-recorder --config my.toml                  # other config
-./target/release/pm-recorder --data-dir /tmp/x --run-for 120   # smoke test: 2 min into /tmp/x
-./target/release/pm-recorder --log-file /tmp/rec.log            # log to stdout and this file
-RUST_LOG=debug ./target/release/pm-recorder                    # also log file open/close, connects
+./target/release/pm record                                     # uses config/recorder.toml
+./target/release/pm record --config my.toml                    # other config
+./target/release/pm record --data-dir /tmp/x --run-for 120     # smoke test: 2 min into /tmp/x
+./target/release/pm record --log-file /tmp/rec.log              # log to stdout and this file
+RUST_LOG=debug ./target/release/pm record                      # also log file open/close, connects
 ```
 
 | flag | default | meaning |
@@ -39,7 +51,7 @@ finalises every file before exiting, which can take a few seconds.
 
 ```bash
 tmux new -d -s recorder 'cd ~/trading/polymarket-explore-claude/pm-rs && \
-  while true; do ./target/release/pm-recorder; sleep 10; done'
+  while true; do ./target/release/pm record; sleep 10; done'
 tmux attach -t recorder        # detach: Ctrl-b d
 tmux kill-session -t recorder  # clean stop (SIGHUP)
 ```
@@ -47,11 +59,21 @@ tmux kill-session -t recorder  # clean stop (SIGHUP)
 The loop restarts the recorder after a crash. Each run writes new files (the `r<run>` suffix),
 so a restart never overwrites earlier data.
 
+> **Upgrading from `pm-recorder`:** the recorder used to be its own binary,
+> `target/release/pm-recorder`. Building no longer updates it, but it is not deleted either, so
+> an old tmux loop keeps running the stale version. Change the loop to `pm record` (as above)
+> and restart the session.
+
 ### Log
 
 The log always goes to stdout. With `[log] file` set (the default config uses
 `data/logs/recorder.log`), the same lines are also appended to that file, without colours.
 Timestamps are local time. Follow it with `tail -f data/logs/recorder.log`.
+
+Stdout and the file are written by separate background threads. If stdout blocks (a dead ssh
+session, a paused terminal), the file log and the recording carry on; console lines are dropped
+instead. Every other command (`pm audit`, …) logs to stderr so that its report on stdout can be
+redirected.
 
 **Discovery** logs which events are being recorded. At startup it lists every event; after that
 it logs only changes, sorted by league and start time:
@@ -198,7 +220,7 @@ e.g. data/live/2026/10/17/esports/cs2/clob_book/06.r1792219759.jsonl.zst
 | `clob_other` | `market_resolved` and unknown event types |
 | `book_snapshots` | top 50 levels of each changed book every 60 s (no replay needed) |
 | `trades` | RTDS trades with wallet, name, outcome (includes maker fills, see the caveat in the README) |
-| `scores` | live game state (`score` = `in-map\|maps\|BoN`, `period`, `live`, `ended`) |
+| `scores` | live game state (`score` = `in-map\|maps\|BoN`, `period`, `live`, `ended`). Most leagues identify the game by `gameId` (number); some (cricket) use `metadataGameId` (string) instead |
 | `gamma_events` | raw Gamma event JSON on state change and every 6 h |
 | `markets` | normalised market metadata (`MarketInfo`) + `tracked` flag on change |
 
@@ -223,7 +245,99 @@ Join keys: `asset_id`/`asset` = token id; `market`/`conditionId` = condition id;
 `markets` stream to get league, event, outcomes and start time. `scores.gameId` corresponds to
 `markets.game_id`.
 
-## 5. Troubleshooting
+## 5. Audit the recorded data
+
+Run it after a long recording, after copying data from the server, or when something looks off
+(a log that went quiet, a day that seems small). `pm audit` reads every recorded file once (in parallel; ~30 GB of raw JSON in a few seconds on
+a desktop) and prints a report. It never modifies anything.
+
+```bash
+./target/release/pm audit                                   # everything under the config's data_dir
+./target/release/pm audit --data-dir /srv/pm/data/live      # another root (e.g. synced from the server)
+./target/release/pm audit --from 2026-10-17 --to 2026-10-18 --category esports
+./target/release/pm audit --league cs2 --stream clob_book,trades
+./target/release/pm audit --json > audit.json               # the same report as JSON
+./target/release/pm audit --gap-mins 5 --top 50             # stricter gap detection, longer lists
+```
+
+Report sections:
+
+| section | what it tells you |
+|---|---|
+| Days | files, recorder runs, records, compressed and raw size per UTC day |
+| Runs | each recorder process (`r<run>` = start time): span, size, and the pause since the previous run (`OVERLAPS` = two recorders ran at once) |
+| Feed connections | per feed (`clob` = all shards): connections, drops (clean shutdowns excluded), total and longest downtime, most common drop reasons; then outages of ≥ 5 s |
+| Recording gaps | periods where **no** feed wrote anything for ≥ `--gap-mins` within a run: the recorder or the network stalled |
+| Longest silences of single streams | one stream quiet for ≥ `--gap-mins`. Often just a quiet league; the same stream silent in every league at once points to a feed problem |
+| Size by stream / partition | records, compressed / raw size, first and last record. Unconfigured leagues (`other/*`, scores only) are folded into one row; `--json` has every row |
+| Content | per league: tracked markets that produced CLOB data / markets tracked, tokens, CLOB events by type, book snapshots, wallet trades, distinct wallets, traded notional, distinct games with scores |
+| Integrity | files cut short by a crash (or still being written), undecodable lines, records outside their file's hour, and files that do not follow the layout |
+
+Logs go to stderr, the report to stdout.
+
+`pm audit` and `pm export` share these flags for choosing data:
+
+| flag | default | meaning |
+|---|---|---|
+| `--data-dir` | config `data_dir` | recorded data root |
+| `-c, --config` | `config/recorder.toml` | used to find `data_dir` |
+| `--from`, `--to` | all | UTC days, `YYYY-MM-DD`, inclusive |
+| `--category`, `--league`, `--stream` | all | comma-separated or repeated |
+| `--threads` | all cores (export: at most 8) | worker threads |
+
+## 6. Export to Parquet
+
+`pm export` converts finished days into typed Parquet tables under `data/parquet` (next to
+`data/live`), partitioned by table, date, category and league. It is incremental: only days
+whose raw files changed are converted again, so run it after every sync.
+
+```bash
+./target/release/pm export                                  # every finished day
+./target/release/pm export --from 2026-10-17 --league cs2   # a subset
+./target/release/pm export --tables bbo,clob_trades,tokens  # only some tables
+./target/release/pm export --include-today --force          # rebuild, including today's files
+```
+
+Tables: `book_updates` (full L2 history), `tick_size_changes`, `bbo`, `clob_trades`,
+`wallet_trades`, `book_snapshots`, `scores`, and the dimensions `markets`, `tokens`, `events`,
+`sessions`. Schemas, the book replay rule, caveats and polars / DuckDB examples are in
+[dataset.md](dataset.md).
+
+A day of five esports leagues (1.5 GB of zstd JSONL) takes ~50 s and ~2.8 GB of memory on 8
+threads. Lower `--threads` if memory is tight.
+
+## 7. Live market overview
+
+`pm markets` asks Gamma for every open event and prints:
+- totals: open events, live games, 24 h and total volume, liquidity, open interest;
+- a breakdown by category (sports, politics, crypto, esports, …);
+- sports and esports leagues by 24 h volume, with `rec = yes` for leagues in your recorder config;
+- the top events by 24 h volume, and the live ones with their score;
+- the share of sports + esports volume your config records, and the biggest leagues it misses.
+
+```bash
+./target/release/pm markets                                 # all ~22k open events, ~6 s
+./target/release/pm markets --category esports              # one Gamma tag, ~1–2 s
+./target/release/pm markets --category sports --live        # live games only
+./target/release/pm markets --category esports --markets    # + market counts and types
+./target/release/pm markets --league cs2,lol --top 30
+./target/release/pm markets --json > markets.json
+```
+
+| flag | meaning |
+|---|---|
+| `--category <tag>` | Gamma tag slug (`esports`, `sports`, `soccer`, `politics`, `crypto`, `tennis`, …), filtered server-side |
+| `--league <abbr>` | Gamma sport abbreviation (`cs2`, `epl`, `nfl`, …), the same keys the recorder config uses |
+| `--live` | only events in play right now |
+| `--markets` | also fetch every market: open markets, order books, `sportsMarketType` breakdown. ~14x more data; combine with `--category` |
+| `--top <n>` | rows in the league and event lists (default 15) |
+| `--no-config` | skip the comparison with `config/recorder.toml` |
+
+Volumes are Gamma's figures (USDC). An event's category is the first of its tags in this order:
+esports, sports, crypto, politics / elections, geopolitics, finance / economy / business, tech,
+culture, science, weather, world; anything else is `other`.
+
+## 8. Troubleshooting
 
 | symptom | cause / fix |
 |---|---|
@@ -233,3 +347,10 @@ Join keys: `asset_id`/`asset` = token id; `market`/`conditionId` = condition id;
 | scores land in `other/<abbr>` instead of your league | set `score_league = "<abbr>"` on that league |
 | repeated `disconnected` in sessions | network trouble; the recorder reconnects with backoff (0.5 s → 30 s) and resubscribes |
 | `missing` grows quickly | books are resubscribed automatically; if it persists, report it with the log |
+| the server still runs the old recorder after an update | the tmux loop calls `target/release/pm-recorder`, which is no longer built; change it to `pm record` |
+| `pm audit` lists unrecognised files | files outside the `YYYY/MM/DD/<category>/<league>/<stream>/HH.r<run>.jsonl.zst` layout, e.g. recordings from before 2026-10-17 (`<stream>/<league>/<date>/…`). They are reported, never read |
+| `pm audit`: "every outage was shorter than 5s" | normal: drops are counted in the feed table, but brief reconnects are not listed one by one |
+| `pm audit` shows a stream silent in every league at once | the feed stopped sending that message type while others kept flowing (seen with `clob_bbo`); check the same window in `clob_book` |
+| `pm markets` shows a configured league as not recorded (no `rec`), or its scores land in `other/` | the config `key` differs from Gamma's sport abbreviation (e.g. `r6seige` vs `r6siege`); set `score_league = "<gamma abbr>"` on that league |
+| `pm export` says today's files were skipped | today is still being written; it is exported on the next run, or now with `--include-today` |
+| `pm export` uses too much memory | lower `--threads`; each worker holds one hour of one league |

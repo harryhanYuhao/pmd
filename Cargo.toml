@@ -12,11 +12,16 @@ pm-core = { path = "crates/pm-core" }
 pm-api = { path = "crates/pm-api" }
 pm-ws = { path = "crates/pm-ws" }
 pm-store = { path = "crates/pm-store" }
+pm-recorder = { path = "crates/pm-recorder" }
+pm-dataset = { path = "crates/pm-dataset" }
 
 anyhow = "1"
 thiserror = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
+rayon = "1.12"
+arrow-array = "60.0.0"
+parquet = { version = "60.0.0", default-features = false, features = ["arrow", "zstd"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 reqwest = { version = "0.13", features = ["json", "gzip", "query"] }
 serde = { version = "1", features = ["derive", "rc"] }

@@ -87,3 +87,58 @@ impl Registry {
 pub fn system(feed: &str) -> Partition {
     Partition::new(SYSTEM, feed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registry() -> Registry {
+        let cfg: Config = toml::from_str(
+            r#"
+            data_dir = "x"
+            [[leagues]]
+            category = "esports"
+            key = "cs2"
+            tag_id = 1
+            [[leagues]]
+            category = "esports"
+            key = "r6seige"
+            score_league = "R6Siege"
+            tag_id = 2
+            "#,
+        )
+        .unwrap();
+        Registry::new(&cfg)
+    }
+
+    #[test]
+    fn routes_leagues_and_score_leagues() {
+        let r = registry();
+        assert_eq!(r.league("cs2").to_string(), "esports/cs2");
+        assert_eq!(r.league("nba").to_string(), "other/nba", "unconfigured league");
+        // The sports feed's abbreviation, case-insensitively, through score_league aliases.
+        assert_eq!(r.score_league("CS2").to_string(), "esports/cs2");
+        assert_eq!(r.score_league("r6siege").to_string(), "esports/r6seige");
+        assert_eq!(
+            r.score_league("r6seige").to_string(),
+            "other/r6seige",
+            "the key is replaced by the alias"
+        );
+        assert_eq!(r.score_league("Wta Challenger").to_string(), "other/wta_challenger");
+    }
+
+    #[test]
+    fn the_first_league_to_see_an_id_keeps_it() {
+        let mut r = registry();
+        let (cs2, r6) = (r.league("cs2"), r.league("r6seige"));
+        r.note_event("ev", &cs2);
+        r.note_event("ev", &r6);
+        assert_eq!(r.event_partition("ev"), Some(cs2.clone()));
+        let c = ConditionId::from("0xm");
+        r.note_market(&c, &r6);
+        r.note_market(&c, &cs2);
+        assert_eq!(r.market_partition("0xm"), Some(r6));
+        assert_eq!(r.market_partition("0xother"), None);
+        assert_eq!(system("clob").to_string(), "_system/clob");
+    }
+}

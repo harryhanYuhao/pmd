@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 zstd.workspace = true

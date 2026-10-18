@@ -1,69 +1,29 @@
 //! pm-recorder: records Polymarket order books, trades, market metadata and live scores for the
-//! configured leagues. See the workspace README for the data layout.
+//! configured leagues. See the workspace README for the data layout. Run it with `pm record`.
 
 mod clob;
-mod config;
+pub mod config;
 mod discovery;
 mod feeds;
-mod logging;
 mod registry;
 mod sessions;
 mod status;
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
-use clap::Parser;
 use pm_store::{Store, StoreConfig};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::Config;
+pub use crate::config::Config;
 use crate::registry::{Registry, SharedRegistry};
 
-#[derive(Parser)]
-#[command(about = "Record Polymarket order books, trades, metadata and live scores to hourly zstd JSONL files")]
-struct Args {
-    #[arg(short, long, default_value = "config/recorder.toml")]
-    config: PathBuf,
-    /// Override `data_dir` from the config.
-    #[arg(long)]
-    data_dir: Option<PathBuf>,
-    /// Stop after this many seconds (for smoke tests).
-    #[arg(long)]
-    run_for: Option<u64>,
-    /// Also append the log to this file (overrides `[log] file`).
-    #[arg(long)]
-    log_file: Option<PathBuf>,
-    /// Write the log to stdout only, even if the config names a file.
-    #[arg(long, conflicts_with = "log_file")]
-    no_log_file: bool,
-}
-
-impl Args {
-    /// The config file with command-line overrides applied.
-    fn config(&self) -> Result<Config> {
-        let mut cfg = Config::load(&self.config)?;
-        if let Some(d) = &self.data_dir {
-            cfg.data_dir = d.clone();
-        }
-        if self.no_log_file {
-            cfg.log.file = None;
-        } else if let Some(f) = &self.log_file {
-            cfg.log.file = Some(f.clone());
-        }
-        Ok(cfg)
-    }
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Records until Ctrl-C / SIGTERM / SIGHUP, or for `run_for` if given (smoke tests), then
+/// finishes every file. Logging must already be set up.
+pub async fn run(cfg: Config, run_for: Option<Duration>) -> Result<()> {
     let started = std::time::Instant::now();
-    let args = Args::parse();
-    let cfg = args.config()?;
-    let _log_guard = logging::init(&cfg.log.level, cfg.log.file.as_deref())?;
     let cfg = Arc::new(cfg);
     log_startup(&cfg);
 
@@ -131,8 +91,8 @@ async fn main() -> Result<()> {
     let every = Duration::from_secs(cfg.log.status_secs.max(5));
     tasks.push(("status", tokio::spawn(status::run(sources, every, cancel.clone()))));
 
-    match args.run_for {
-        Some(s) => tokio::time::sleep(Duration::from_secs(s)).await,
+    match run_for {
+        Some(d) => tokio::time::sleep(d).await,
         None => shutdown_signal().await,
     }
     tracing::info!("shutting down: finishing files...");

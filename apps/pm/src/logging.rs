@@ -1,4 +1,6 @@
-//! Log output: always stdout, optionally also appended to a file (same lines, no colours).
+//! Log output: always the console (stdout for `pm record`, stderr for commands whose report goes
+//! to stdout), optionally also appended to a file (same lines, no colours). Each sink has its own writer thread, so a stalled stdout (dead ssh session, paused terminal)
+//! cannot hold up the file or the tasks that log; stdout lines are dropped instead.
 
 use std::io::IsTerminal;
 use std::path::Path;
@@ -18,14 +20,32 @@ impl FormatTime for LocalTime {
     }
 }
 
-/// Installs the global subscriber. `RUST_LOG` overrides `level`. Keep the returned guard alive
-/// until exit: dropping it flushes the file.
-pub fn init(level: &str, file: Option<&Path>) -> Result<Option<WorkerGuard>> {
+/// Where console log lines go.
+#[derive(Clone, Copy)]
+pub enum Console {
+    Stdout,
+    Stderr,
+}
+
+/// Installs the global subscriber. `RUST_LOG` overrides `level`. Keep the returned guards alive
+/// until exit: dropping them flushes the console and the file.
+pub fn init(level: &str, console: Console, file: Option<&Path>) -> Result<Vec<WorkerGuard>> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let (ansi, (out, stdout_guard)) = match console {
+        Console::Stdout => (
+            std::io::stdout().is_terminal(),
+            tracing_appender::non_blocking(std::io::stdout()),
+        ),
+        Console::Stderr => (
+            std::io::stderr().is_terminal(),
+            tracing_appender::non_blocking(std::io::stderr()),
+        ),
+    };
     let stdout = fmt::layer()
         .with_timer(LocalTime)
         .with_target(false)
-        .with_ansi(std::io::stdout().is_terminal());
+        .with_ansi(ansi)
+        .with_writer(out);
     let (file_layer, guard) = match file {
         Some(path) => {
             if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
@@ -51,5 +71,5 @@ pub fn init(level: &str, file: Option<&Path>) -> Result<Option<WorkerGuard>> {
         .with(stdout)
         .with(file_layer)
         .init();
-    Ok(guard)
+    Ok([Some(stdout_guard), guard].into_iter().flatten().collect())
 }

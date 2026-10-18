@@ -18,6 +18,8 @@
 //! All file I/O happens on one dedicated thread; producers send lines over a bounded channel
 //! (back-pressure instead of unbounded memory growth).
 
+pub mod read;
+
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};

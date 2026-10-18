@@ -1,10 +1,18 @@
-# pm-rs — Polymarket recorder (and future trader)
+# pm-rs — Polymarket data tools (and future trader)
 
-A Cargo workspace. Shared library crates hold everything a live trader will also need; the
-recorder is one binary on top of them.
+A Cargo workspace. Shared library crates hold everything a live trader will also need; one
+binary, `pm`, exposes them as subcommands:
 
-Docs: [usage](docs/usage.md) (build, run, config, output) · [developer guide](docs/developer.md)
-· [leagues worth recording](docs/leagues.md).
+| command | does |
+|---|---|
+| `pm record` | record order books, trades, metadata and live scores for configured leagues |
+| `pm audit` | summarise recorded data: size, runs, connection drops, gaps, damage |
+| `pm export` | convert recorded data to partitioned Parquet for analysis |
+| `pm markets` | live overview of Polymarket: open / live events, volume by category and league |
+
+Docs: [quick start](docs/README.md) · [usage](docs/usage.md) (every command) ·
+[Parquet dataset](docs/dataset.md) · [developer guide](docs/developer.md) ·
+[leagues worth recording](docs/leagues.md).
 
 ```
 pm-rs/
@@ -14,9 +22,11 @@ pm-rs/
 │   ├── pm-api     REST clients: Gamma (metadata), CLOB public (books), Data API (trades)
 │   ├── pm-ws      resilient websocket session: reconnect/backoff, keepalive, idle detection,
 │   │              resubscribe on every connect, session ids for gap tracking
-│   └── pm-store   hour-partitioned zstd JSONL writer on a dedicated thread
+│   ├── pm-store   hour-partitioned zstd JSONL writer on a dedicated thread
+│   ├── pm-recorder the recorder (discovery, feeds, status) as a library
+│   └── pm-dataset offline tools over recorded files: audit, Parquet export
 ├── apps/
-│   └── pm-recorder
+│   └── pm         the CLI: `pm record | audit | export | markets`
 └── config/recorder.toml
 ```
 
@@ -30,9 +40,9 @@ identical files.
 
 ```bash
 cargo build --release
-./target/release/pm-recorder --config config/recorder.toml          # runs until Ctrl-C / SIGTERM / SIGHUP
-./target/release/pm-recorder --data-dir /tmp/x --run-for 120         # smoke test
-RUST_LOG=debug ./target/release/pm-recorder ...                      # file open/close detail
+./target/release/pm record --config config/recorder.toml            # runs until Ctrl-C / SIGTERM / SIGHUP
+./target/release/pm record --data-dir /tmp/x --run-for 120           # smoke test
+RUST_LOG=debug ./target/release/pm record ...                        # file open/close detail
 ```
 
 For unattended recording run it in tmux. The loop restarts it 10 s after a crash; each restart
@@ -40,7 +50,7 @@ starts new files, so nothing is overwritten:
 
 ```bash
 tmux new -d -s recorder 'cd ~/trading/polymarket-explore-claude/pm-rs && \
-  while true; do ./target/release/pm-recorder --config config/recorder.toml; sleep 10; done'
+  while true; do ./target/release/pm record --config config/recorder.toml; sleep 10; done'
 tmux attach -t recorder      # watch the status line (every minute); detach with Ctrl-b d
 tmux kill-session -t recorder
 ```

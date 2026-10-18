@@ -384,3 +384,99 @@ impl Handler {
         self.stats.lock().unwrap().snapshots += n;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tokens(range: std::ops::Range<usize>) -> Vec<TokenId> {
+        range.map(|i| TokenId::from(i.to_string())).collect()
+    }
+
+    fn sizes(m: &ClobManager) -> Vec<usize> {
+        m.shards.iter().map(|s| s.assets.lock().unwrap().len()).collect()
+    }
+
+    /// A manager whose connections never open (cancelled before they start).
+    fn manager(max: usize) -> ClobManager {
+        let cfg = ClobSection {
+            max_assets_per_conn: max,
+            ..Default::default()
+        };
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let (tx, _rx) = mpsc::channel(16);
+        ClobManager::new(&cfg, tx, cancel)
+    }
+
+    #[tokio::test]
+    async fn shards_fill_up_before_new_connections_open() {
+        let mut m = manager(500);
+        m.update(&tokens(0..1200), &[]);
+        assert_eq!(sizes(&m), [500, 500, 200]);
+
+        // Freed room is reused before the last shard grows or a new one opens.
+        m.update(&[], &tokens(0..100));
+        assert_eq!(sizes(&m), [400, 500, 200]);
+        m.update(&tokens(2000..2150), &[]);
+        assert_eq!(sizes(&m), [500, 500, 250]);
+        assert_eq!(m.shard_count(), 3);
+
+        // Removing unknown tokens is a no-op; shards are never closed, only emptied.
+        m.update(&[], &tokens(9000..9010));
+        m.update(&[], &tokens(100..1200));
+        assert_eq!(sizes(&m), [100, 0, 50]);
+        let all: usize = sizes(&m).iter().sum();
+        assert_eq!(all, 150);
+    }
+
+    #[tokio::test]
+    async fn a_token_is_in_exactly_one_shard() {
+        let mut m = manager(3);
+        m.update(&tokens(0..10), &[]);
+        m.update(&[], &tokens(2..5));
+        m.update(&tokens(10..13), &[]);
+        let mut seen = std::collections::HashSet::new();
+        for s in &m.shards {
+            for t in s.assets.lock().unwrap().iter() {
+                assert!(seen.insert(t.clone()), "{t} in two shards");
+            }
+        }
+        assert_eq!(seen.len(), 10);
+        assert!(sizes(&m).iter().all(|&n| n <= 3));
+    }
+
+    #[test]
+    fn events_go_to_the_documented_streams() {
+        let msg = |j: &str| serde_json::from_str::<MarketMsg>(j).unwrap();
+        let m = r#""market":"0xm","asset_id":"1","timestamp":"1""#;
+        assert_eq!(
+            stream_of(&msg(&format!(r#"{{"event_type":"book",{m},"bids":[],"asks":[]}}"#))),
+            "clob_book"
+        );
+        assert_eq!(
+            stream_of(&msg(
+                r#"{"event_type":"price_change","market":"0xm","timestamp":"1","price_changes":[]}"#
+            )),
+            "clob_book"
+        );
+        assert_eq!(
+            stream_of(&msg(&format!(
+                r#"{{"event_type":"tick_size_change",{m},"old_tick_size":"0.01","new_tick_size":"0.001"}}"#
+            ))),
+            "clob_book"
+        );
+        assert_eq!(
+            stream_of(&msg(&format!(
+                r#"{{"event_type":"last_trade_price",{m},"price":"0.5","size":"1","side":"BUY"}}"#
+            ))),
+            "clob_trades"
+        );
+        assert_eq!(
+            stream_of(&msg(&format!(r#"{{"event_type":"best_bid_ask",{m}}}"#))),
+            "clob_bbo"
+        );
+        assert_eq!(stream_of(&msg(r#"{"event_type":"market_resolved"}"#)), "clob_other");
+        assert_eq!(stream_of(&msg(r#"{"event_type":"something_new"}"#)), "clob_other");
+    }
+}

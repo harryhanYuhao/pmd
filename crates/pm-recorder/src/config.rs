@@ -224,3 +224,85 @@ impl Config {
         Ok(cfg)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn load(name: &str, text: &str) -> Result<Config> {
+        let dir = std::env::temp_dir().join(format!("pm-recorder-config-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        let path = dir.join("config/recorder.toml");
+        std::fs::write(&path, text).unwrap();
+        let cfg = Config::load(&path);
+        std::fs::remove_dir_all(&dir).unwrap();
+        cfg
+    }
+
+    const LEAGUE: &str = "[[leagues]]\ncategory = \"esports\"\nkey = \"cs2\"\ntag_id = 1\n";
+
+    #[test]
+    fn relative_paths_resolve_against_the_config_file() {
+        let cfg = load(
+            "paths",
+            &format!("data_dir = \"../data/live\"\n[log]\nfile = \"../logs/r.log\"\n{LEAGUE}"),
+        )
+        .unwrap();
+        assert!(
+            cfg.data_dir.ends_with("config/../data/live"),
+            "{}",
+            cfg.data_dir.display()
+        );
+        assert!(cfg.log.file.unwrap().ends_with("config/../logs/r.log"));
+
+        let abs = load("abs", &format!("data_dir = \"/srv/data\"\n{LEAGUE}")).unwrap();
+        assert_eq!(abs.data_dir, Path::new("/srv/data"));
+        assert!(abs.log.file.is_none(), "no [log] file by default");
+        let empty = load("empty-log", &format!("data_dir = \"d\"\n[log]\nfile = \"\"\n{LEAGUE}")).unwrap();
+        assert!(empty.log.file.is_none(), "\"\" means stdout only");
+    }
+
+    #[test]
+    fn defaults_fill_missing_sections() {
+        let cfg = load("defaults", &format!("data_dir = \"d\"\n{LEAGUE}")).unwrap();
+        assert_eq!((cfg.log.level.as_str(), cfg.log.status_secs), ("info", 60));
+        assert_eq!((cfg.store.zstd_level, cfg.store.flush_secs), (6, 5));
+        assert_eq!(cfg.discovery.interval_secs, 60);
+        assert!(cfg.clob.enabled && cfg.activity.enabled && cfg.sports.enabled);
+        assert!(cfg.leagues[0].include_untyped);
+    }
+
+    #[test]
+    fn mistakes_are_rejected_with_a_reason() {
+        let err = |name, text: &str| format!("{:#}", load(name, text).unwrap_err());
+        assert!(err("typo", &format!("data_dir = \"d\"\n[clob]\nenabeld = true\n{LEAGUE}")).contains("unknown field"));
+        assert!(err("none", "data_dir = \"d\"\nleagues = []\n").contains("no leagues configured"));
+        assert!(err("twice", &format!("data_dir = \"d\"\n{LEAGUE}{LEAGUE}")).contains("configured twice"));
+        let no_id = "data_dir = \"d\"\n[[leagues]]\ncategory = \"sports\"\nkey = \"nfl\"\n";
+        assert!(err("no-id", no_id).contains("set tag_id and/or series_id"));
+        assert!(err("missing", "").contains("data_dir"));
+    }
+
+    #[test]
+    fn market_type_filters() {
+        let lg = |inc: &[&str], exc: &[&str], untyped: bool| League {
+            category: "sports".into(),
+            key: "nfl".into(),
+            score_league: None,
+            tag_id: None,
+            series_id: Some(1),
+            games_only: false,
+            include_types: inc.iter().map(|s| s.to_string()).collect(),
+            exclude_types: exc.iter().map(|s| s.to_string()).collect(),
+            include_untyped: untyped,
+        };
+        let all = lg(&[], &[], true);
+        assert!(all.wants(Some("anything")) && all.wants(None));
+        let ml = lg(&["moneyline", "totals"], &[], false);
+        assert!(ml.wants(Some("moneyline")) && !ml.wants(Some("spreads")) && !ml.wants(None));
+        let no_totals = lg(&[], &["totals"], true);
+        assert!(no_totals.wants(Some("moneyline")) && !no_totals.wants(Some("totals")));
+        // Exclude wins over include.
+        assert!(!lg(&["totals"], &["totals"], true).wants(Some("totals")));
+    }
+}

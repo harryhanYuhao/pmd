@@ -439,3 +439,55 @@ fn markets(n: usize) -> String {
         format!("{n} markets")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(json: serde_json::Value) -> GammaEvent {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn fingerprint_tracks_state_not_prices_of_open_markets() {
+        let base = serde_json::json!({"id": "1", "live": true, "score": "1-0", "volume": 5,
+            "markets": [{"conditionId": "0xm", "active": true, "closed": false, "outcomePrices": "[\"0.4\",\"0.6\"]"}]});
+        let fp = |f: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = base.clone();
+            f(&mut v);
+            fingerprint(&event(v))
+        };
+        let same = fp(&|_| {});
+        assert_eq!(fp(&|v| v["volume"] = 999.into()), same, "volume churn is ignored");
+        assert_eq!(
+            fp(&|v| v["markets"][0]["outcomePrices"] = "[\"0.5\",\"0.5\"]".into()),
+            same,
+            "live prices too"
+        );
+        assert_ne!(fp(&|v| v["score"] = "2-0".into()), same);
+        assert_ne!(fp(&|v| v["live"] = false.into()), same);
+        assert_ne!(fp(&|v| v["markets"][0]["closed"] = true.into()), same);
+        // Once closed, the final prices are the resolution and do count.
+        let closed = |p: &str| {
+            fp(&|v: &mut serde_json::Value| {
+                v["markets"][0]["closed"] = true.into();
+                v["markets"][0]["outcomePrices"] = p.into();
+            })
+        };
+        assert_ne!(closed("[\"1\",\"0\"]"), closed("[\"0\",\"1\"]"));
+    }
+
+    #[test]
+    fn human_spans() {
+        assert_eq!(span(0), "0m");
+        assert_eq!(span(59), "59m");
+        assert_eq!(span(60), "1h00m");
+        assert_eq!(span(125), "2h05m");
+        assert_eq!(span(24 * 60 + 61), "1d1h");
+        assert_eq!(markets(1), "1 market");
+        assert_eq!(markets(0), "0 markets");
+        assert_eq!(when(None), "no start time");
+        assert!(when(Some(Utc::now() + chrono::Duration::minutes(90))).contains("(in 1h"));
+        assert!(when(Some(Utc::now() - chrono::Duration::minutes(30))).ends_with("ago)"));
+    }
+}
