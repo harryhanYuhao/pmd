@@ -5,6 +5,7 @@
 //! JSON strings inside JSON; the accessors decode them.
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use pm_core::{Fixed6, MarketInfo, TokenId};
 use serde::Deserialize;
 use serde_json::Value;
@@ -56,8 +57,31 @@ pub struct GammaMarket {
     pub updated_at: Option<String>,
 }
 
+impl GammaEvent {
+    /// Scheduled start of the match, if Gamma gives one.
+    pub fn start(&self) -> Option<DateTime<Utc>> {
+        parse_time(self.start_time.as_deref()?)
+    }
+
+    /// A scheduled match (as opposed to a future, outright or season prop).
+    pub fn is_game(&self) -> bool {
+        self.game_id.is_some() || self.start().is_some()
+    }
+}
+
+/// Gamma times are RFC 3339, but sometimes with a space for `T` and an offset like `+00`.
+pub fn parse_time(s: &str) -> Option<DateTime<Utc>> {
+    let s = s.replace(' ', "T");
+    DateTime::parse_from_rfc3339(&s)
+        .or_else(|_| DateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%#z"))
+        .ok()
+        .map(|t| t.with_timezone(&Utc))
+}
+
 fn json_list(s: &Option<String>) -> Vec<String> {
-    s.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default()
+    s.as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default()
 }
 
 impl GammaMarket {
@@ -70,7 +94,10 @@ impl GammaMarket {
     }
 
     pub fn outcome_prices(&self) -> Vec<f64> {
-        json_list(&self.outcome_prices).iter().filter_map(|p| p.parse().ok()).collect()
+        json_list(&self.outcome_prices)
+            .iter()
+            .filter_map(|p| p.parse().ok())
+            .collect()
     }
 
     /// Open for trading on the CLOB right now.
@@ -110,6 +137,8 @@ impl GammaMarket {
 #[derive(Clone, Debug, Default)]
 pub struct EventsQuery {
     pub tag_id: Option<u64>,
+    /// Gamma series (one per league season; sports leagues' match events live here).
+    pub series_id: Option<u64>,
     pub closed: Option<bool>,
     /// RFC 3339; events whose `endDate` is at or after this.
     pub end_date_min: Option<String>,
@@ -121,6 +150,9 @@ impl EventsQuery {
         let mut q = vec![];
         if let Some(t) = self.tag_id {
             q.push(("tag_id", t.to_string()));
+        }
+        if let Some(s) = self.series_id {
+            q.push(("series_id", s.to_string()));
         }
         if let Some(c) = self.closed {
             q.push(("closed", c.to_string()));
@@ -165,7 +197,12 @@ impl Gamma {
     }
 
     pub async fn events(&self, q: &EventsQuery) -> Result<Vec<GammaEvent>> {
-        Ok(self.events_raw(q).await?.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
+        Ok(self
+            .events_raw(q)
+            .await?
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect())
     }
 }
 
@@ -193,5 +230,17 @@ mod tests {
         assert_eq!(info.token_ids[1].as_str(), "22");
         assert_eq!(info.tick_size.unwrap().to_string(), "0.001");
         assert_eq!(info.game_id, Some(7));
+    }
+
+    #[test]
+    fn parses_gamma_times() {
+        for s in [
+            "2026-10-17T14:00:00Z",
+            "2026-10-17 14:00:00+00",
+            "2026-10-17 14:00:00+00:00",
+        ] {
+            assert_eq!(parse_time(s).unwrap().to_rfc3339(), "2026-10-17T14:00:00+00:00", "{s}");
+        }
+        assert!(parse_time("").is_none());
     }
 }

@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 pm-core.workspace = true
 anyhow.workspace = true
+chrono.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -54,10 +54,21 @@ impl WsSpec {
 
 #[derive(Debug)]
 pub enum WsEvent {
-    Connected { feed: Arc<str>, session: u64 },
+    Connected {
+        feed: Arc<str>,
+        session: u64,
+    },
     /// A data frame. `recv_ns` is taken as soon as the frame is read.
-    Text { session: u64, recv_ns: i64, text: String },
-    Disconnected { feed: Arc<str>, session: u64, reason: String },
+    Text {
+        session: u64,
+        recv_ns: i64,
+        text: String,
+    },
+    Disconnected {
+        feed: Arc<str>,
+        session: u64,
+        reason: String,
+    },
 }
 
 /// Produces the subscription messages to send right after each connect.
@@ -102,18 +113,28 @@ async fn run(
     cancel: CancellationToken,
 ) {
     let mut backoff = spec.backoff_min;
+    let mut first = true;
     while !cancel.is_cancelled() {
         let session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
         let started = Instant::now();
         let reason = tokio::select! {
             _ = cancel.cancelled() => "shutdown".to_string(),
-            r = connection(&spec, session, &on_connect, &out, &mut ctl, &cancel) => match r {
+            r = connection(&spec, session, first, &on_connect, &out, &mut ctl, &cancel) => match r {
                 Ok(why) => why,
                 Err(e) => format!("{e:#}"),
             },
         };
+        first = false;
         let feed: Arc<str> = Arc::from(spec.name.as_str());
-        if out.send(WsEvent::Disconnected { feed, session, reason: reason.clone() }).await.is_err() {
+        if out
+            .send(WsEvent::Disconnected {
+                feed,
+                session,
+                reason: reason.clone(),
+            })
+            .await
+            .is_err()
+        {
             return;
         }
         if cancel.is_cancelled() {
@@ -123,7 +144,11 @@ async fn run(
         if started.elapsed() > Duration::from_secs(60) {
             backoff = spec.backoff_min;
         }
-        tracing::warn!(feed = %spec.name, session, %reason, retry_in = ?backoff, "websocket disconnected");
+        tracing::warn!(
+            "[{}] disconnected ({reason}); reconnecting in {:.1}s",
+            spec.name,
+            backoff.as_secs_f64()
+        );
         tokio::select! {
             _ = cancel.cancelled() => return,
             _ = tokio::time::sleep(backoff) => {}
@@ -136,24 +161,44 @@ async fn run(
 async fn connection(
     spec: &WsSpec,
     session: u64,
+    first: bool,
     on_connect: &OnConnect,
     out: &mpsc::Sender<WsEvent>,
     ctl: &mut mpsc::UnboundedReceiver<String>,
     cancel: &CancellationToken,
 ) -> anyhow::Result<String> {
-    let (ws, _) = tokio::time::timeout(Duration::from_secs(20), tokio_tungstenite::connect_async(spec.url.as_str()))
-        .await
-        .map_err(|_| anyhow::anyhow!("connect timeout"))??;
+    let (ws, _) = tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio_tungstenite::connect_async(spec.url.as_str()),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("connect timeout"))??;
     let (mut sink, mut stream) = ws.split();
     for m in on_connect() {
         sink.send(Message::Text(m.into())).await?;
     }
-    tracing::info!(feed = %spec.name, session, "websocket connected");
-    if out.send(WsEvent::Connected { feed: Arc::from(spec.name.as_str()), session }).await.is_err() {
+    // First connects are routine (callers summarise them); reconnects are worth seeing.
+    if first {
+        tracing::debug!("[{}] connected (session {session})", spec.name);
+    } else {
+        tracing::info!("[{}] reconnected (session {session})", spec.name);
+    }
+    if out
+        .send(WsEvent::Connected {
+            feed: Arc::from(spec.name.as_str()),
+            session,
+        })
+        .await
+        .is_err()
+    {
         return Ok("consumer gone".into());
     }
 
-    let ka_every = spec.keepalive.as_ref().map(|k| k.0).unwrap_or(Duration::from_secs(3600));
+    let ka_every = spec
+        .keepalive
+        .as_ref()
+        .map(|k| k.0)
+        .unwrap_or(Duration::from_secs(3600));
     let mut keepalive = tokio::time::interval_at(Instant::now() + ka_every, ka_every);
     let mut deadline = Instant::now() + spec.idle_timeout;
 

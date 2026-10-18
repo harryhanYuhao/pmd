@@ -8,37 +8,38 @@
 //! - `_system/rtds/sessions`, `_system/sports/sessions`: connect / disconnect markers
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use pm_core::now_ns;
-use pm_core::wire::{clob_ws::split_frame, rtds, sports};
+use pm_core::wire::{rtds, split_frame, sports};
 use pm_store::{Partition, StoreHandle};
 use pm_ws::{WsEvent, WsSpec};
 use serde::Deserialize;
-use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{ActivitySection, SportsSection};
 use crate::registry::{self, SharedRegistry};
+use crate::sessions;
 
 #[derive(Default)]
 pub struct FeedStats {
+    /// Messages stored.
     pub kept: AtomicU64,
+    /// Messages ignored (untracked events, unwanted leagues).
     pub dropped: AtomicU64,
+    pub connected: AtomicBool,
 }
 
-async fn session_marker(store: &StoreHandle, feed_name: &str, ev: &WsEvent) -> bool {
-    let (session, m) = match ev {
-        WsEvent::Connected { feed, session } => (*session, json!({"feed": &**feed, "event": "connected"})),
-        WsEvent::Disconnected { feed, session, reason } => {
-            (*session, json!({"feed": &**feed, "event": "disconnected", "reason": reason}))
-        }
-        WsEvent::Text { .. } => return false,
-    };
-    store.write(&registry::system(feed_name), "sessions", now_ns(), session, &m.to_string()).await;
-    true
+impl FeedStats {
+    /// Handles a connect / disconnect event; returns `false` for data frames.
+    async fn session(&self, store: &StoreHandle, feed: &str, ev: &WsEvent) -> bool {
+        let Some((_, up)) = sessions::record(store, feed, ev).await else {
+            return false;
+        };
+        self.connected.store(up, Ordering::Relaxed);
+        true
+    }
 }
 
 pub async fn run_activity(
@@ -57,14 +58,18 @@ pub async fn run_activity(
     let untracked = Partition::new(registry::OTHER, "untracked");
 
     while let Some(ev) = rx.recv().await {
-        if session_marker(&store, "rtds", &ev).await {
+        if stats.session(&store, "rtds", &ev).await {
             continue;
         }
-        let WsEvent::Text { session, recv_ns, text } = ev else { continue };
+        let WsEvent::Text { session, recv_ns, text } = ev else {
+            continue;
+        };
         let Some(parts) = split_frame(&text) else { continue };
         for raw in parts {
             let probe: Option<rtds::RtdsProbe> = serde_json::from_str(raw.get()).ok();
-            let Some(p) = probe.and_then(|p| p.payload) else { continue };
+            let Some(p) = probe.and_then(|p| p.payload) else {
+                continue;
+            };
             let part = {
                 let r = reg.read().unwrap();
                 p.condition_id
@@ -106,10 +111,12 @@ pub async fn run_sports(
     let wanted: Vec<String> = cfg.leagues.iter().map(|l| l.to_ascii_lowercase()).collect();
 
     while let Some(ev) = rx.recv().await {
-        if session_marker(&store, "sports", &ev).await {
+        if stats.session(&store, "sports", &ev).await {
             continue;
         }
-        let WsEvent::Text { session, recv_ns, text } = ev else { continue };
+        let WsEvent::Text { session, recv_ns, text } = ev else {
+            continue;
+        };
         let Some(parts) = split_frame(&text) else { continue };
         for raw in parts {
             let lg = serde_json::from_str::<LeagueProbe>(raw.get())

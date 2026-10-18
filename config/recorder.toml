@@ -1,6 +1,11 @@
 # pm-recorder configuration. Relative paths are resolved against this file's directory.
 data_dir = "../../data/live"
 
+[log]
+level = "info"                     # error | warn | info | debug; RUST_LOG overrides
+file = "../../data/logs/recorder.log"   # also append the log here; "" = stdout only
+status_secs = 60                   # status report period
+
 [store]
 zstd_level = 6        # 3 = faster, 9+ = smaller; 6 compresses the CLOB feed ~10x
 flush_secs = 5        # max data lost on a crash
@@ -9,10 +14,16 @@ flush_secs = 5        # max data lost on a crash
 interval_secs = 60            # Gamma poll period; new markets are subscribed within this
 end_date_lookback_hours = 24
 ended_grace_secs = 1800       # keep recording 30 min after Gamma marks an event ended
+max_days_ahead = 7            # skip events starting later than this (0 = no limit); futures unaffected
 
 # Data goes to <data_dir>/<YYYY>/<MM>/<DD>/<category>/<key>/<stream>/<HH>.r<run>.jsonl.zst
-# Gamma tag ids: use the /sports primaryTagId (the `cs2` tag slug is NOT the CS2 league tag).
+# Each league is found by tag_id and/or series_id (both from https://gamma-api.polymarket.com/sports):
+#   tag_id    = primaryTagId: every event of the league, incl. futures and props (the `cs2` tag
+#               slug is NOT the CS2 league tag)
+#   series_id = series: match events only. Needed for Serie A, Champions League and tennis, whose
+#               matches do not carry the primary tag.
 # include_types / exclude_types filter on sportsMarketType; empty include = everything.
+# games_only = true skips events without a start time / game id (futures).
 # score_league: the live-score feed's leagueAbbreviation, if it differs from `key`.
 [[leagues]]
 category = "esports"
@@ -29,9 +40,156 @@ category = "esports"
 key = "lol"
 tag_id = 65
 
+[[leagues]]
+category = "esports"
+key = "val"  # valorant
+tag_id = 101672
+
+[[leagues]]
+category = "esports"
+key = "r6seige"  # rainbow 6 seige
+tag_id = 102755
+
+# ---------------------------------------------------------------------------------------------
+# Sports: match markets only (series_id), main market types only. Player props, exact scores,
+# corners etc. are ~10x the markets for ~1% of the volume. Volumes are 24h, measured 2026-10-17.
+# See docs/leagues.md.
+
+# US football. NFL ~$0.8M/day, CFB ~$9.6M/day on game markets (CFB alone ~7.6k markets: many
+# alternative spread/total lines per game).
+[[leagues]]
+category = "sports"
+key = "nfl"
+series_id = 12185
+include_types = ["moneyline", "spreads", "totals", "first_half_moneyline", "first_half_spreads", "first_half_totals"]
+
+[[leagues]]
+category = "sports"
+key = "cfb"
+series_id = 12756
+include_types = ["moneyline", "spreads", "totals"]
+
+# Basketball. NBA regular season starts late October; college basketball in November.
+[[leagues]]
+category = "sports"
+key = "nba"
+series_id = 10345
+include_types = ["moneyline", "spreads", "totals", "first_half_moneyline", "first_half_spreads", "first_half_totals"]
+
+[[leagues]]
+category = "sports"
+key = "wnba"
+series_id = 10105
+include_types = ["moneyline", "spreads", "totals"]
+
+[[leagues]]
+category = "sports"
+key = "cbb"
+series_id = 10470
+include_types = ["moneyline", "spreads", "totals"]
+
+# Baseball (postseason now) and hockey.
+[[leagues]]
+category = "sports"
+key = "mlb"
+series_id = 3
+include_types = ["moneyline", "spreads", "totals", "nrfi"]
+
+[[leagues]]
+category = "sports"
+key = "nhl"
+series_id = 10346
+include_types = ["moneyline", "spreads", "totals"]
+
+# Soccer: 3-way moneyline (home / draw / away are separate markets), lines, BTTS, half-time.
+[[leagues]]
+category = "soccer"
+key = "epl"
+series_id = 10188
+include_types = ["moneyline", "spreads", "totals", "both_teams_to_score", "soccer_halftime_result"]
+
+[[leagues]]
+category = "soccer"
+key = "lal"
+series_id = 10193
+include_types = ["moneyline", "spreads", "totals", "both_teams_to_score", "soccer_halftime_result"]
+
+[[leagues]]
+category = "soccer"
+key = "sea"           # Serie A
+series_id = 10203
+include_types = ["moneyline", "spreads", "totals", "both_teams_to_score", "soccer_halftime_result"]
+
+[[leagues]]
+category = "soccer"
+key = "bun"           # Bundesliga
+series_id = 10194
+include_types = ["moneyline", "spreads", "totals", "both_teams_to_score", "soccer_halftime_result"]
+
+[[leagues]]
+category = "soccer"
+key = "fl1"           # Ligue 1
+series_id = 10195
+include_types = ["moneyline", "spreads", "totals", "both_teams_to_score", "soccer_halftime_result"]
+
+[[leagues]]
+category = "soccer"
+key = "ucl"           # Champions League
+series_id = 10204
+include_types = ["moneyline", "spreads", "totals", "both_teams_to_score", "soccer_halftime_result"]
+
+[[leagues]]
+category = "soccer"
+key = "uel"           # Europa League
+series_id = 10209
+include_types = ["moneyline", "spreads", "totals", "both_teams_to_score", "soccer_halftime_result"]
+
+[[leagues]]
+category = "soccer"
+key = "mls"
+series_id = 10189
+include_types = ["moneyline", "spreads", "totals", "both_teams_to_score", "soccer_halftime_result"]
+
+[[leagues]]
+category = "soccer"
+key = "bra"           # Brasileirão
+series_id = 10359
+include_types = ["moneyline", "spreads", "totals", "both_teams_to_score", "soccer_halftime_result"]
+
+[[leagues]]
+category = "soccer"
+key = "arg"           # Argentina
+series_id = 10312
+include_types = ["moneyline", "spreads", "totals", "both_teams_to_score", "soccer_halftime_result"]
+
+# Combat sports, tennis, cricket.
+[[leagues]]
+category = "sports"
+key = "ufc"
+series_id = 38
+include_types = ["moneyline", "totals", "ufc_go_the_distance", "ufc_method_of_victory"]
+
+[[leagues]]
+category = "sports"
+key = "atp"
+series_id = 10365
+include_types = ["moneyline", "tennis_match_totals", "tennis_set_winner"]
+
+[[leagues]]
+category = "sports"
+key = "wta"
+series_id = 10366
+include_types = ["moneyline", "tennis_match_totals", "tennis_set_winner"]
+
+[[leagues]]
+category = "sports"
+key = "crint"         # international cricket
+series_id = 10528
+include_types = ["moneyline"]
+
 [clob]
 enabled = true
-max_assets_per_conn = 250
+max_assets_per_conn = 500
 custom_features = true        # also best_bid_ask / new_market / market_resolved
 book_snapshot_secs = 60       # top-of-book snapshot of each changed book (0 = off)
 book_snapshot_levels = 50

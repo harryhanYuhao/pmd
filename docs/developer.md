@@ -33,7 +33,8 @@ data.
 | `fixed` | `Fixed6(i64)`, an exact 6-decimal fixed-point type for prices and sizes (`Price`, `Size` aliases). Parses strings exactly; serde accepts a string or number; `mul_fixed`, `complement` (1 − p) |
 | `ids` | `TokenId`, `ConditionId` (`Arc<str>` newtypes, cheap clone), `Side` (`BUY`/`SELL`) |
 | `market` | `MarketInfo`: normalised market metadata (league, event, outcomes, token ids, start time, tick size, neg-risk, status) |
-| `wire::clob_ws` | `MarketMsg` enum for the CLOB market channel. `split_frame` (a frame may be one object or an array), `strip_hashes`, `subscribe_msg`, `update_subscription_msg` |
+| `wire` | `split_frame`: splits any feed's frame (one object or an array) into raw JSON objects |
+| `wire::clob_ws` | `MarketMsg` enum for the CLOB market channel. `strip_hashes`, `subscribe_msg`, `update_subscription_msg` |
 | `wire::rtds` | RTDS `activity/trades` messages, `subscribe_trades_msg` |
 | `wire::sports` | `GameUpdate` from the live-score feed |
 | `book` | `OrderBook` (BTreeMap L2): `apply_snapshot`, `set_level`, `reconcile`, `best_bid/ask`, `mid`, `spread`, `top(n)`, `sweep`/`sweep_notional` (fill simulation with VWAP). `BookSet::apply(&MarketMsg)` keeps a book per token and returns an `ApplyReport` |
@@ -44,8 +45,9 @@ the `RawValue`s returned by `split_frame`.
 ### pm-api
 
 `Http` (reqwest + retry on 429/5xx with backoff) and thin clients:
-- `Gamma::events` / `events_raw` (`EventsQuery { tag_id, closed, end_date_min, … }`, paginates);
-  `GammaMarket::to_info` builds a `MarketInfo`.
+- `Gamma::events` / `events_raw` (`EventsQuery { tag_id, series_id, closed, end_date_min, … }`, paginates);
+  `GammaMarket::to_info` builds a `MarketInfo`. `GammaEvent::start()` / `is_game()` and
+  `gamma::parse_time` handle Gamma's start-time formats.
 - `Clob::book`, `Clob::server_time`.
 - `DataApi::trades` (offset ≤ 10k, ~1.4 req/s sustained).
 
@@ -81,6 +83,8 @@ drop(h); store.shutdown().await?;                        // finishes every file
   files in append mode.
 - `stream` is `&'static str`: streams are a fixed set chosen in code, not data.
 - `list_files(root, part, stream)` lists files across days.
+- `StoreHandle::stats()` returns per `(Partition, stream)` lines, raw bytes and on-disk
+  (compressed) bytes; disk bytes are counted at each flush. `shutdown()` returns the final totals.
 
 ## pm-recorder internals
 
@@ -98,9 +102,12 @@ all writers ──► StoreHandle ──► pm-store thread
 |---|---|
 | `config.rs` | TOML schema (`deny_unknown_fields`, defaults per section) |
 | `registry.rs` | `Registry`: tracked markets, plus market/event/score-league → `Partition` routing. Constants `SYSTEM = "_system"`, `OTHER = "other"` |
-| `discovery.rs` | Polls each league's open events. Records `gamma_events` when its fingerprint changes (or every 6 h) and `markets` on change. Diffs desired vs tracked tokens; leagues whose fetch failed keep their markets |
-| `clob.rs` | `ClobManager` shards tokens and (un)subscribes dynamically. `run_handler` stores events by stream, maintains the `BookSet`, repairs books and writes snapshots |
+| `discovery.rs` | Polls each league's open events: `fetch_all` (tag + series, 4 leagues at a time) → `process_event` (scope filters, records `gamma_events` on fingerprint change or every 6 h and `markets` on change) → `update_tracked` (diff; leagues whose fetch failed keep their markets) → `log_changes` |
+| `clob.rs` | `ClobManager` shards tokens and (un)subscribes dynamically. `run_handler` drives a `Handler`: `on_frame` stores events by stream and updates the `BookSet`, `resync_due` re-requests broken books, `write_snapshots` |
+| `sessions.rs` | Connect/disconnect markers to `_system/<feed>/sessions`, shared by all feeds |
 | `feeds.rs` | RTDS trades (routed by condition id, then event slug) and the sports feed (routed by `leagueAbbreviation`) |
+| `status.rs` | Periodic human-readable status (per-league markets and MB from `StoreHandle::stats`) and the final report |
+| `logging.rs` | tracing setup: stdout plus an optional file (non-blocking appender), local-time stamps |
 | `main.rs` | CLI, task wiring, signals (Ctrl-C/SIGTERM/SIGHUP), ordered shutdown |
 
 ### Book integrity
@@ -152,9 +159,14 @@ let fill = books.get(token).unwrap().sweep(Side::Buy, size, Some(limit));
 - Store server payloads verbatim; derive and normalise offline. Recording and organising are
   separate steps. The organiser (per event / market, Parquet) is planned and should only read
   finished hours.
+- Log messages are sentences for a human reading `tail -f`: put the values in the message
+  (`info!("discovery: recording {n} markets")`), not in key=value fields. Routine, high-rate
+  events go to `debug!`.
 - Use money as `Fixed6`, never `f64`, in live code.
-- `cargo clippy --workspace --all-targets` must be clean; run `cargo test --workspace` before
-  committing.
+- `cargo fmt` (120 columns, `rustfmt.toml`) and `cargo clippy --workspace --all-targets` must be
+  clean; run `cargo test --workspace` before committing.
+- Every long-running task must observe `cancel`, including inside long awaits (see
+  `Discovery::run`): shutdown aborts tasks that take more than 10 s, and names them in the log.
 - Verified feed quirks (empty-side markers, the global `new_market` broadcast, RTDS maker fills,
   ping formats) are documented in module docs. Keep them there when you change behaviour.
 

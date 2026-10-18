@@ -1,10 +1,10 @@
 //! CLOB `market` websocket channel (`wss://ws-subscriptions-clob.polymarket.com/ws/market`).
 //!
 //! Formats verified against the live feed (2026-10). A frame is either one JSON object or an
-//! array of objects (the initial book dump after subscribing is an array).
+//! array of objects (the initial book dump after subscribing is an array); see
+//! [`split_frame`](super::split_frame).
 
 use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue;
 
 use super::de_u64;
 use crate::fixed::{Price, Size};
@@ -126,19 +126,6 @@ impl MarketMsg {
     }
 }
 
-/// Splits a frame into its JSON objects without re-encoding them, so the exact server bytes
-/// can be stored. Returns `None` for non-JSON frames such as `PONG`.
-pub fn split_frame(text: &str) -> Option<Vec<&RawValue>> {
-    let t = text.trim_start();
-    if t.starts_with('[') {
-        serde_json::from_str::<Vec<&RawValue>>(text).ok()
-    } else if t.starts_with('{') {
-        serde_json::from_str::<&RawValue>(text).ok().map(|v| vec![v])
-    } else {
-        None
-    }
-}
-
 /// Removes `"hash":"…"` fields. They are opaque per-update digests that cannot be compressed
 /// (≈2/3 of the compressed size of the `price_change` stream) and are not needed to rebuild books.
 pub fn strip_hashes(raw: &str) -> std::borrow::Cow<'_, str> {
@@ -149,7 +136,9 @@ pub fn strip_hashes(raw: &str) -> std::borrow::Cow<'_, str> {
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
     while let Some(i) = rest.find(KEY) {
-        let Some(close) = rest[i + KEY.len()..].find('"') else { break };
+        let Some(close) = rest[i + KEY.len()..].find('"') else {
+            break;
+        };
         let mut end = i + KEY.len() + close + 1;
         let mut start = i;
         if rest[end..].starts_with(',') {
@@ -189,6 +178,7 @@ pub fn update_subscription_msg(assets: &[&str], subscribe: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::split_frame;
 
     #[test]
     fn parses_live_samples() {
@@ -199,16 +189,24 @@ mod tests {
         assert_eq!(p.price_changes[0].side, Side::Buy);
 
         let lt = r#"{"market":"0x10","asset_id":"327","price":"0.68","size":"452.04","fee_rate_bps":"0","side":"SELL","timestamp":"1792166227766","event_type":"last_trade_price","transaction_hash":"0x5f"}"#;
-        assert!(matches!(serde_json::from_str::<MarketMsg>(lt).unwrap(), MarketMsg::LastTradePrice(_)));
+        assert!(matches!(
+            serde_json::from_str::<MarketMsg>(lt).unwrap(),
+            MarketMsg::LastTradePrice(_)
+        ));
 
         let bk = r#"[{"market":"0xb3","asset_id":"919","timestamp":"1792166227567","hash":"ed","bids":[{"price":"0.01","size":"22.35"}],"asks":[],"event_type":"book"}]"#;
         let parts = split_frame(bk).unwrap();
         assert_eq!(parts.len(), 1);
-        let MarketMsg::Book(b) = serde_json::from_str(parts[0].get()).unwrap() else { panic!() };
+        let MarketMsg::Book(b) = serde_json::from_str(parts[0].get()).unwrap() else {
+            panic!()
+        };
         assert_eq!(b.bids.len(), 1);
 
         let other = r#"{"event_type":"something_new","market":"0x1"}"#;
-        assert!(matches!(serde_json::from_str::<MarketMsg>(other).unwrap(), MarketMsg::Unknown));
+        assert!(matches!(
+            serde_json::from_str::<MarketMsg>(other).unwrap(),
+            MarketMsg::Unknown
+        ));
         assert!(split_frame("PONG").is_none());
     }
 
@@ -216,7 +214,10 @@ mod tests {
     fn strips_hashes() {
         let a = r#"{"x":[{"asset_id":"1","side":"BUY","hash":"cd86","best_bid":"0.68"},{"p":"2","hash":"ab"}],"hash":"ff"}"#;
         let s = strip_hashes(a);
-        assert_eq!(s, r#"{"x":[{"asset_id":"1","side":"BUY","best_bid":"0.68"},{"p":"2"}]}"#);
+        assert_eq!(
+            s,
+            r#"{"x":[{"asset_id":"1","side":"BUY","best_bid":"0.68"},{"p":"2"}]}"#
+        );
         serde_json::from_str::<serde_json::Value>(&s).unwrap();
         assert!(matches!(strip_hashes(r#"{"a":1}"#), std::borrow::Cow::Borrowed(_)));
     }

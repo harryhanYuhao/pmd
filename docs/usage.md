@@ -20,7 +20,8 @@ cargo test --workspace             # optional
 ./target/release/pm-recorder                                   # uses config/recorder.toml
 ./target/release/pm-recorder --config my.toml                  # other config
 ./target/release/pm-recorder --data-dir /tmp/x --run-for 120   # smoke test: 2 min into /tmp/x
-RUST_LOG=debug ./target/release/pm-recorder                    # also log file open/close
+./target/release/pm-recorder --log-file /tmp/rec.log            # log to stdout and this file
+RUST_LOG=debug ./target/release/pm-recorder                    # also log file open/close, connects
 ```
 
 | flag | default | meaning |
@@ -28,6 +29,8 @@ RUST_LOG=debug ./target/release/pm-recorder                    # also log file o
 | `-c, --config` | `config/recorder.toml` | config file (relative to the current directory) |
 | `--data-dir` | config `data_dir` | override the output root |
 | `--run-for <secs>` | until stopped | stop after N seconds |
+| `--log-file <path>` | config `[log] file` | also append the log to this file |
+| `--no-log-file` | | stdout only, even if the config names a file |
 
 The recorder runs until Ctrl-C, SIGTERM or SIGHUP. On any of these it drains its queue and
 finalises every file before exiting, which can take a few seconds.
@@ -44,23 +47,49 @@ tmux kill-session -t recorder  # clean stop (SIGHUP)
 The loop restarts the recorder after a crash. Each run writes new files (the `r<run>` suffix),
 so a restart never overwrites earlier data.
 
-### Status line
+### Log
 
-The recorder logs one line per minute, e.g.:
+The log always goes to stdout. With `[log] file` set (the default config uses
+`data/logs/recorder.log`), the same lines are also appended to that file, without colours.
+Timestamps are local time. Follow it with `tail -f data/logs/recorder.log`.
+
+**Discovery** logs which events are being recorded. At startup it lists every event; after that
+it logs only changes, sorted by league and start time:
 
 ```
-status markets=1789 clob_events=118234 dropped=0 pruned=310 missing=12 resyncs=12 snapshots=2960 trades=402 scores=88 raw_mb=61.2
+INFO discovery: recording 2083 markets in 207 events [esports/cs2 565 markets / 87 events, esports/dota2 319 markets / 19 events, ...] | 207 new events, 0 finished, 0 resized | tokens +4166 -0 | 1.1s
+INFO   + esports/cs2     Counter-Strike: HAVU vs Phantom (BO3) - Elisa BreakOut Series #2 Playoffs  (started Sat 17:00 (2h09m ago), 23 markets)
+INFO   + esports/cs2     DraculaN Season 7: Winner  (no start time, 24 markets)
+INFO   ~ esports/lol     LoL: T1 vs Gen.G (BO5) - Worlds  (12 -> 18 markets)
+INFO   - esports/dota2   Dota 2: Tundra vs Falcons (BO3) - ...  (finished, 9 markets dropped)
 ```
 
-| field | meaning | healthy |
+`+` marks a new event, `~` an event whose market count changed (e.g. map markets added), and
+`-` an event that is no longer recorded (closed, or 30 min after it ended). Polls with no change
+are logged at debug level only.
+
+**Status** is reported every `status_secs` (60 s):
+
+```
+INFO status: 2083 markets (4166 tokens) | CLOB 17/17 connections up | trades feed up | scores feed up
+INFO   last 60s: 118.2k book/trade events (1970/s), 213 wallet trades, 45 score updates, book repairs: 98 pruned, 3 resynced
+INFO   written: 2.2 MB/min to disk (50.8 MB/min raw), 412.0 MB total since start (~3.12 GB/day)
+INFO     _system                                0 B/min       398 B total
+INFO     esports/cs2        565 markets      1.1 MB/min      140.2 MB total
+INFO     esports/lol        776 markets      212 KB/min       98.7 MB total
+INFO     other                                 3 KB/min        2 KB total
+```
+
+| part | meaning | healthy |
 |---|---|---|
-| `markets` | markets currently subscribed | roughly constant, moves with the schedule |
-| `clob_events` | order-book / trade events received | ~1–3k/s for the default esports config |
-| `dropped` | CLOB events with no known market | 0 |
-| `pruned` / `missing` / `resyncs` | book repairs (see the developer guide) | `missing` ≪ 0.1% of events |
-| `trades` / `trades_other` | RTDS trades kept / ignored (untracked events) | |
-| `scores` | live-score updates | > 0 while games are live |
-| `raw_mb` | uncompressed bytes written since start | ~10× the on-disk size |
+| connections up | CLOB websockets connected / opened (250 tokens each); trades and scores feed state | all up; a `DOWN` that persists means network trouble |
+| book/trade events | CLOB messages received in the window | ~1–3k/s for the esports config |
+| book repairs | stale levels pruned / books re-requested (see the developer guide) | resynced ≪ 0.1% of events |
+| written | compressed bytes on disk per minute, raw bytes, total since start, extrapolated per day | the first window is inflated by the initial book snapshots |
+| per-league lines | markets recorded and bytes written for each `category/league` | |
+
+Reconnects (`[clob-3] reconnected`) are logged at info and disconnects at warn. At shutdown the
+recorder logs the total records and bytes written.
 
 ## 3. Configure
 
@@ -70,6 +99,11 @@ resolved against the config file's directory. Unknown keys are rejected, so typo
 ```toml
 data_dir = "../../data/live"        # → <repo>/data/live (created if missing)
 
+[log]
+level = "info"                      # error | warn | info | debug (RUST_LOG overrides)
+file = "../../data/logs/recorder.log"   # also append here; "" = stdout only
+status_secs = 60                    # status report period
+
 [store]
 zstd_level = 6                      # 3 faster … 9+ smaller (~10% gain, more CPU)
 flush_secs = 5                      # at most this much is lost on a crash
@@ -78,11 +112,14 @@ flush_secs = 5                      # at most this much is lost on a crash
 interval_secs = 60                  # Gamma poll; new markets appear within this
 end_date_lookback_hours = 24
 ended_grace_secs = 1800             # keep recording 30 min after an event ends
+max_days_ahead = 7                  # skip events starting later than this (0 = no limit)
 
 [[leagues]]                         # one block per league
 category = "esports"                # 1st directory level under the date
 key = "cs2"                         # 2nd directory level
-tag_id = 100780                     # Gamma /sports primaryTagId
+tag_id = 100780                     # Gamma /sports primaryTagId: all events incl. futures
+# series_id = 10310                 # Gamma /sports series: match events only (tag and/or series)
+# games_only = false                # true = skip events without start time / game id
 # score_league = "cs2"              # live-score leagueAbbreviation if it differs from key
 # include_types = ["moneyline", "child_moneyline"]   # only these sportsMarketType (empty = all)
 # exclude_types = ["totals"]
@@ -90,7 +127,7 @@ tag_id = 100780                     # Gamma /sports primaryTagId
 
 [clob]
 enabled = true
-max_assets_per_conn = 250           # tokens per websocket
+max_assets_per_conn = 500           # tokens per websocket (500 verified with 61 connections)
 custom_features = true              # best_bid_ask + market_resolved events
 book_snapshot_secs = 60             # top-of-book snapshots (0 = off)
 book_snapshot_levels = 50
@@ -107,18 +144,34 @@ leagues = []                        # empty = all leagues (small feed)
 
 ### Adding a league
 
-1. Find its `primaryTagId`. It is listed in [`leagues.md`](leagues.md), or you can query it:
+1. Look up the league in [`leagues.md`](leagues.md), or query the list:
    ```bash
-   curl -s https://gamma-api.polymarket.com/sports | jq -r '.[] | "\(.sport) \(.primaryTagId)"'
+   curl -s https://gamma-api.polymarket.com/sports | jq -r '.[] | "\(.sport) tag=\(.primaryTagId) series=\(.series)"'
    ```
-   Use `primaryTagId`. A tag *slug* (for example `/tags/slug/cs2`) is a different tag and
-   returns the wrong events.
-2. Add a `[[leagues]]` block with a `category`, a `key` and the `tag_id`.
-3. Restart the recorder.
+2. Add a `[[leagues]]` block with a `category`, a `key`, and one of the following:
+   - **`series_id`** (the `series` field): the league's **match events only**. Use this for
+     traditional sports. For Serie A, the Champions League and tennis it is the only way to
+     find matches, because the match events do not carry the league's primary tag.
+   - **`tag_id`** (the `primaryTagId`): every event, including futures, outrights and season
+     props. A tag *slug* (for example `/tags/slug/cs2`) is a different tag and returns the
+     wrong events.
+   - **Both**, if you want matches and futures. Results are merged.
+3. For sports, add `include_types`. Each match has dozens of prop markets (player stats, exact
+   score, corners) that are about 10× the markets for about 1% of the volume. To find a league's
+   types and how much each trades:
+   ```bash
+   curl -s 'https://gamma-api.polymarket.com/events?series_id=12185&closed=false&limit=100' \
+     | jq -r '.[].markets[] | "\(.sportsMarketType)\t\(.volume24hr // 0)"' \
+     | awk '{n[$1]++; v[$1]+=$2} END {for (t in n) printf "%-40s %5d %12.0f\n", t, n[t], v[t]}' | sort -k3 -nr
+   ```
+4. Restart the recorder. The first discovery log line shows the markets per league.
 
-Cost scales with market count. The default 3 esports leagues (~1,800 markets / 3,600 tokens) use
-about 4–5 GB/day. A major sports league can trade 10–100× more per market. For a high-volume
-league, consider `include_types` (for example only moneylines) to keep the size manageable.
+Cost scales with activity rather than market count. Measured on Saturday evening 2026-10-17 with
+the full config (26 leagues, ~15,200 markets, 61 connections): ~9–10k events/s and 17–27 MB/min
+on disk (~25–40 GB/day at that rate). College football with live games was 60% of that, while
+the five esports leagues were ~3 MB/min. Weekday and off-season rates are much lower. To cut
+the volume, narrow `include_types` on the busiest league (`cfb` with only `moneyline` drops ~80%
+of its book updates), or lower `max_days_ahead`.
 
 ## 4. Output
 
@@ -176,7 +229,7 @@ Join keys: `asset_id`/`asset` = token id; `market`/`conditionId` = condition id;
 |---|---|
 | `parsing config/recorder.toml: unknown field` | a typo, or a key in the wrong section |
 | `no leagues configured` | at least one `[[leagues]]` block is required |
-| a league records 0 markets | wrong `tag_id` (a slug tag rather than `primaryTagId`), or no open events right now |
+| a league records 0 markets | wrong `tag_id` (a slug tag rather than `primaryTagId`); try `series_id`; no open events right now; or the season has not started (`cbb`) |
 | scores land in `other/<abbr>` instead of your league | set `score_league = "<abbr>"` on that league |
 | repeated `disconnected` in sessions | network trouble; the recorder reconnects with backoff (0.5 s → 30 s) and resubscribes |
 | `missing` grows quickly | books are resubscribed automatically; if it persists, report it with the log |

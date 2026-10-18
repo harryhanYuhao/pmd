@@ -43,7 +43,9 @@ impl Clob {
     }
 
     pub async fn book(&self, token: &str) -> Result<BookSummary> {
-        self.http.get_json(&format!("{CLOB_URL}/book"), &[("token_id", token.to_string())]).await
+        self.http
+            .get_json(&format!("{CLOB_URL}/book"), &[("token_id", token.to_string())])
+            .await
     }
 
     /// Server time, Unix seconds.

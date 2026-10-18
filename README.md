@@ -50,7 +50,8 @@ finishes every file before exiting.
 
 ## What is recorded
 
-Discovery polls Gamma every 60 s for open events of each configured league (`tag_id`) and
+Discovery polls Gamma every 60 s for open events of each configured league (`tag_id` and/or
+`series_id`) and
 subscribes every tradable market (filterable by `sportsMarketType`). An event's markets are
 dropped 30 min after Gamma marks it ended or when they close.
 
@@ -93,9 +94,14 @@ Joins: `asset_id`/`asset` = token id, `market`/`conditionId` = condition id
 (→ `markets` stream for league, event, outcomes, start time); `scores.gameId` = Gamma `gameId`
 (in `markets.game_id`).
 
-### Volume (measured 2026-10-16, ~1,900 markets / 3,800 tokens)
+### Volume
 
-~2,000 CLOB events/s, ≈ 3 MB/min compressed (≈ 4–5 GB/day) of which `clob_book` is ~80%.
+- Esports only (2026-10-16, ~1,900 markets): ~2,000 CLOB events/s, ≈ 3 MB/min compressed
+  (≈ 4–5 GB/day), of which `clob_book` is ~80%.
+- Full config with sports (Saturday evening 2026-10-17, ~15,200 markets, 61 connections):
+  ~9–10k events/s, 17–27 MB/min (≈ 25–40 GB/day at that rate). Live college football was 60%
+  of it.
+
 zstd level matters little (level 6 → 15 saves ~10%); dropping hashes saved 3x.
 
 ### Book integrity
@@ -114,3 +120,4 @@ apply the same rule (`OrderBook::reconcile`).
   catches ~98% of takers but also tags some makers. A clean taker flag is still open work.
 - The global `new_market` broadcast (all of Polymarket) is dropped.
 - Gamma tag ids must be the `/sports` `primaryTagId` (the `cs2` tag slug is a different tag).
+  Some leagues' matches (Serie A, Champions League, tennis) only appear under `series_id`.

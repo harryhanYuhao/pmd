@@ -33,22 +33,38 @@ impl Registry {
         let mut score_leagues = HashMap::new();
         for l in &cfg.leagues {
             let p = Partition::new(&l.category, &l.key);
-            score_leagues.insert(l.score_league.as_deref().unwrap_or(&l.key).to_ascii_lowercase(), p.clone());
+            score_leagues.insert(
+                l.score_league.as_deref().unwrap_or(&l.key).to_ascii_lowercase(),
+                p.clone(),
+            );
             leagues.insert(l.key.clone(), p);
         }
-        Registry { tracked: HashMap::new(), leagues, score_leagues, markets: HashMap::new(), events: HashMap::new() }
+        Registry {
+            tracked: HashMap::new(),
+            leagues,
+            score_leagues,
+            markets: HashMap::new(),
+            events: HashMap::new(),
+        }
     }
 
     pub fn league(&self, key: &str) -> Partition {
-        self.leagues.get(key).cloned().unwrap_or_else(|| Partition::new(OTHER, key))
+        self.leagues
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| Partition::new(OTHER, key))
     }
 
     /// Partition for a sports-feed league; unconfigured leagues go under `other/`.
     pub fn score_league(&self, abbreviation: &str) -> Partition {
         let a = abbreviation.to_ascii_lowercase();
-        self.score_leagues.get(&a).cloned().unwrap_or_else(|| Partition::new(OTHER, &a))
+        self.score_leagues
+            .get(&a)
+            .cloned()
+            .unwrap_or_else(|| Partition::new(OTHER, &a))
     }
 
+    /// Remembers which partition an event belongs to (the first league to see it keeps it).
     pub fn note_event(&mut self, event_slug: &str, part: &Partition) {
         if !self.events.contains_key(event_slug) {
             self.events.insert(event_slug.to_string(), part.clone());

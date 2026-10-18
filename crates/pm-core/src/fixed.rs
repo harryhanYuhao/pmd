@@ -51,7 +51,11 @@ impl Fixed6 {
     pub fn mul_fixed(self, other: Fixed6) -> Fixed6 {
         let p = self.0 as i128 * other.0 as i128;
         let half = SCALE as i128 / 2;
-        let q = if p >= 0 { (p + half) / SCALE as i128 } else { (p - half) / SCALE as i128 };
+        let q = if p >= 0 {
+            (p + half) / SCALE as i128
+        } else {
+            (p - half) / SCALE as i128
+        };
         Fixed6(q as i64)
     }
 
@@ -109,7 +113,11 @@ impl FromStr for Fixed6 {
         if !int.bytes().all(|b| b.is_ascii_digit()) || !frac.bytes().all(|b| b.is_ascii_digit()) {
             return Err(err());
         }
-        let mut v: i64 = if int.is_empty() { 0 } else { int.parse().map_err(|_| err())? };
+        let mut v: i64 = if int.is_empty() {
+            0
+        } else {
+            int.parse().map_err(|_| err())?
+        };
         v = v.checked_mul(SCALE).ok_or_else(err)?;
         let fb = frac.as_bytes();
         let mut f: i64 = 0;

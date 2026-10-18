@@ -5,11 +5,13 @@ mod clob;
 mod config;
 mod discovery;
 mod feeds;
+mod logging;
 mod registry;
+mod sessions;
+mod status;
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -19,9 +21,10 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
+use crate::registry::{Registry, SharedRegistry};
 
 #[derive(Parser)]
-#[command(about = "Record Polymarket esports feeds to hour-partitioned zstd JSONL")]
+#[command(about = "Record Polymarket order books, trades, metadata and live scores to hourly zstd JSONL files")]
 struct Args {
     #[arg(short, long, default_value = "config/recorder.toml")]
     config: PathBuf,
@@ -31,23 +34,38 @@ struct Args {
     /// Stop after this many seconds (for smoke tests).
     #[arg(long)]
     run_for: Option<u64>,
+    /// Also append the log to this file (overrides `[log] file`).
+    #[arg(long)]
+    log_file: Option<PathBuf>,
+    /// Write the log to stdout only, even if the config names a file.
+    #[arg(long, conflicts_with = "log_file")]
+    no_log_file: bool,
+}
+
+impl Args {
+    /// The config file with command-line overrides applied.
+    fn config(&self) -> Result<Config> {
+        let mut cfg = Config::load(&self.config)?;
+        if let Some(d) = &self.data_dir {
+            cfg.data_dir = d.clone();
+        }
+        if self.no_log_file {
+            cfg.log.file = None;
+        } else if let Some(f) = &self.log_file {
+            cfg.log.file = Some(f.clone());
+        }
+        Ok(cfg)
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-
+    let started = std::time::Instant::now();
     let args = Args::parse();
-    let mut cfg = Config::load(&args.config)?;
-    if let Some(d) = args.data_dir {
-        cfg.data_dir = d;
-    }
+    let cfg = args.config()?;
+    let _log_guard = logging::init(&cfg.log.level, cfg.log.file.as_deref())?;
     let cfg = Arc::new(cfg);
-    tracing::info!(data_dir = %cfg.data_dir.display(), leagues = cfg.leagues.len(), "starting recorder");
+    log_startup(&cfg);
 
     let store = Store::start(StoreConfig {
         root: cfg.data_dir.clone(),
@@ -56,19 +74,15 @@ async fn main() -> Result<()> {
         ..Default::default()
     })?;
     let cancel = CancellationToken::new();
-    let reg: registry::SharedRegistry =
-        Arc::new(std::sync::RwLock::new(registry::Registry::new(&cfg)));
+    let reg: SharedRegistry = Arc::new(RwLock::new(Registry::new(&cfg)));
     let mut tasks = Vec::new();
 
+    // Order books: the handler consumes every shard; discovery tells the manager what to subscribe.
     let clob_stats = clob::SharedClobStats::default();
-    let clob_mgr = if cfg.clob.enabled {
+    let clob_mgr = cfg.clob.enabled.then(|| {
         let (tx, rx) = mpsc::channel(50_000);
-        let mgr = Arc::new(std::sync::Mutex::new(clob::ClobManager::new(
-            &cfg.clob,
-            tx,
-            cancel.clone(),
-        )));
-        let h = clob::run_handler(
+        let mgr = Arc::new(Mutex::new(clob::ClobManager::new(&cfg.clob, tx, cancel.clone())));
+        let handler = clob::run_handler(
             rx,
             store.handle(),
             reg.clone(),
@@ -77,93 +91,95 @@ async fn main() -> Result<()> {
             clob_stats.clone(),
             cancel.clone(),
         );
-        tasks.push(tokio::spawn(h));
-        Some(mgr)
-    } else {
-        None
-    };
+        tasks.push(("clob", tokio::spawn(handler)));
+        mgr
+    });
 
-    let act_stats = Arc::new(feeds::FeedStats::default());
+    let trade_stats = Arc::new(feeds::FeedStats::default());
     if cfg.activity.enabled {
-        tasks.push(tokio::spawn(feeds::run_activity(
+        let feed = feeds::run_activity(
             cfg.activity.clone(),
             store.handle(),
             reg.clone(),
-            act_stats.clone(),
+            trade_stats.clone(),
             cancel.clone(),
-        )));
+        );
+        tasks.push(("trades feed", tokio::spawn(feed)));
     }
-    let sp_stats = Arc::new(feeds::FeedStats::default());
+    let score_stats = Arc::new(feeds::FeedStats::default());
     if cfg.sports.enabled {
-        tasks.push(tokio::spawn(feeds::run_sports(
+        let feed = feeds::run_sports(
             cfg.sports.clone(),
             store.handle(),
             reg.clone(),
-            sp_stats.clone(),
+            score_stats.clone(),
             cancel.clone(),
-        )));
+        );
+        tasks.push(("scores feed", tokio::spawn(feed)));
     }
 
-    let disc = discovery::Discovery::new(cfg.clone(), store.handle(), reg.clone(), clob_mgr);
-    tasks.push(tokio::spawn(disc.run(cancel.clone())));
+    let disc = discovery::Discovery::new(cfg.clone(), store.handle(), reg.clone(), clob_mgr.clone());
+    tasks.push(("discovery", tokio::spawn(disc.run(cancel.clone()))));
 
-    // Periodic status line.
-    {
-        let (store_h, reg, cancel) = (store.handle(), reg.clone(), cancel.clone());
-        let (cs, a, s) = (clob_stats.clone(), act_stats.clone(), sp_stats.clone());
-        tasks.push(tokio::spawn(async move {
-            let mut iv = tokio::time::interval(Duration::from_secs(60));
-            iv.tick().await;
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    _ = iv.tick() => {}
-                }
-                let st = store_h.stats();
-                let mb: f64 = st.values().map(|v| v.bytes as f64).sum::<f64>() / 1e6;
-                let c = cs.lock().unwrap();
-                tracing::info!(
-                    markets = reg.read().unwrap().tracked.len(),
-                    clob_events = c.events,
-                    clob_unparsed = c.unparsed,
-                    dropped = c.dropped,
-                    pruned = c.pruned,
-                    missing = c.missing,
-                    resyncs = c.resyncs,
-                    snapshots = c.snapshots,
-                    trades = a.kept.load(Ordering::Relaxed),
-                    trades_other = a.dropped.load(Ordering::Relaxed),
-                    scores = s.kept.load(Ordering::Relaxed),
-                    raw_mb = format!("{mb:.1}"),
-                    "status"
-                );
-            }
-        }));
-    }
-
-    let stop = async {
-        match args.run_for {
-            Some(s) => tokio::time::sleep(Duration::from_secs(s)).await,
-            None => shutdown_signal().await,
-        }
+    let sources = status::Sources {
+        store: store.handle(),
+        reg: reg.clone(),
+        clob: clob_mgr.map(|m| (m, clob_stats)),
+        trades: cfg.activity.enabled.then_some(trade_stats),
+        scores: cfg.sports.enabled.then_some(score_stats),
     };
-    stop.await;
-    tracing::info!("shutting down");
+    let every = Duration::from_secs(cfg.log.status_secs.max(5));
+    tasks.push(("status", tokio::spawn(status::run(sources, every, cancel.clone()))));
+
+    match args.run_for {
+        Some(s) => tokio::time::sleep(Duration::from_secs(s)).await,
+        None => shutdown_signal().await,
+    }
+    tracing::info!("shutting down: finishing files...");
     cancel.cancel();
-    // Tasks hold store handles; the store can only finish once they are gone.
-    for mut t in tasks {
-        if tokio::time::timeout(Duration::from_secs(10), &mut t)
-            .await
-            .is_err()
-        {
-            tracing::warn!("task did not stop in time; aborting");
+    stop_tasks(tasks).await;
+    let totals = store.shutdown().await?;
+    status::final_report(&totals, started.elapsed());
+    tracing::info!("all files closed");
+    Ok(())
+}
+
+fn log_startup(cfg: &Config) {
+    let leagues: Vec<String> = cfg
+        .leagues
+        .iter()
+        .map(|l| format!("{}/{}", l.category, l.key))
+        .collect();
+    tracing::info!(
+        "pm-recorder starting: {} leagues ({})",
+        leagues.len(),
+        leagues.join(", ")
+    );
+    tracing::info!("data -> {}", cfg.data_dir.display());
+    if let Some(f) = &cfg.log.file {
+        tracing::info!("log  -> {} (and stdout)", f.display());
+    }
+    let feeds: Vec<&str> = [
+        (cfg.clob.enabled, "order books"),
+        (cfg.activity.enabled, "wallet trades"),
+        (cfg.sports.enabled, "live scores"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect();
+    tracing::info!("feeds: {}", feeds.join(", "));
+}
+
+/// Waits for every task after cancellation (they hold store handles, so the store can only finish
+/// once they are gone); a task that does not stop within 10 s is aborted.
+async fn stop_tasks(tasks: Vec<(&str, tokio::task::JoinHandle<()>)>) {
+    for (name, mut t) in tasks {
+        if tokio::time::timeout(Duration::from_secs(10), &mut t).await.is_err() {
+            tracing::warn!("{name} task did not stop in time; aborting");
             t.abort();
             let _ = t.await;
         }
     }
-    store.shutdown().await?;
-    tracing::info!("all files closed");
-    Ok(())
 }
 
 async fn shutdown_signal() {

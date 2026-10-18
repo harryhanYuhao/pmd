@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use pm_core::book::BookSet;
 use pm_core::wire::clob_ws::{self, MarketMsg};
+use pm_core::wire::split_frame;
 use pm_core::{Side, TokenId, now_ns};
 use pm_store::{Partition, StoreHandle};
 use pm_ws::{WsEvent, WsHandle, WsSpec};
@@ -35,6 +36,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::ClobSection;
 use crate::registry::{self, SharedRegistry};
+use crate::sessions;
 
 struct Shard {
     assets: Arc<Mutex<BTreeSet<TokenId>>>,
@@ -135,6 +137,15 @@ impl ClobManager {
         spec.idle_timeout = Duration::from_secs(45);
         let (handle, _task) = pm_ws::spawn(spec, on_connect, self.out.clone(), self.cancel.clone());
         self.shards.push(Shard { assets, handle });
+        tracing::debug!(
+            "clob: opened connection {} ({} connections)",
+            self.shards.len() - 1,
+            self.shards.len()
+        );
+    }
+
+    pub fn shard_count(&self) -> usize {
+        self.shards.len()
     }
 }
 
@@ -153,6 +164,8 @@ pub struct ClobStats {
     pub missing: u64,
     pub resyncs: u64,
     pub snapshots: u64,
+    /// Shards currently connected.
+    pub connected: HashSet<Arc<str>>,
 }
 
 pub type SharedClobStats = Arc<Mutex<ClobStats>>;
@@ -166,6 +179,11 @@ fn stream_of(msg: &MarketMsg) -> &'static str {
     }
 }
 
+/// Resubscribe a token with a broken book at most this often.
+const RESYNC_EVERY: Duration = Duration::from_secs(60);
+
+/// Consumes every shard's events until cancelled: stores them, keeps the books and writes
+/// snapshots.
 pub async fn run_handler(
     mut rx: mpsc::Receiver<WsEvent>,
     store: StoreHandle,
@@ -175,18 +193,22 @@ pub async fn run_handler(
     stats: SharedClobStats,
     cancel: CancellationToken,
 ) {
-    const RESYNC_EVERY: Duration = Duration::from_secs(60);
-    let mut books = BookSet::default();
-    let mut dirty: HashSet<TokenId> = HashSet::new();
-    let mut want_resync: HashSet<TokenId> = HashSet::new();
-    let mut last_resync: HashMap<TokenId, Instant> = HashMap::new();
     let mut snap = tokio::time::interval(Duration::from_secs(cfg.book_snapshot_secs.max(1)));
     snap.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut resync_tick = tokio::time::interval(Duration::from_secs(5));
+    let mut h = Handler {
+        store,
+        reg,
+        mgr,
+        cfg,
+        stats,
+        books: BookSet::default(),
+        dirty: HashSet::new(),
+        want_resync: HashSet::new(),
+        last_resync: HashMap::new(),
+        unknown: registry::system("unknown"),
+    };
     let mut closing = false;
-    let sessions = registry::system("clob");
-    let unknown = registry::system("unknown");
-
     loop {
         tokio::select! {
             // `mgr` holds a sender of `rx`, so the channel never closes by itself: on shutdown,
@@ -197,131 +219,168 @@ pub async fn run_handler(
             }
             ev = rx.recv() => {
                 let Some(ev) = ev else { break };
-                let (session, recv_ns, text) = match ev {
-                    WsEvent::Text { session, recv_ns, text } => (session, recv_ns, text),
-                    WsEvent::Connected { feed, session } => {
-                        let m = json!({"feed": &*feed, "event": "connected"});
-                        store.write(&sessions, "sessions", now_ns(), session, &m.to_string()).await;
-                        continue;
-                    }
-                    WsEvent::Disconnected { feed, session, reason } => {
-                        let m = json!({"feed": &*feed, "event": "disconnected", "reason": reason});
-                        store.write(&sessions, "sessions", now_ns(), session, &m.to_string()).await;
-                        continue;
-                    }
-                };
-                let Some(parts) = clob_ws::split_frame(&text) else { continue };
-                let mut st = ClobStats { frames: 1, ..Default::default() };
-                for raw in parts {
-                    st.events += 1;
-                    let parsed = serde_json::from_str::<MarketMsg>(raw.get()).ok();
-                    let part = parsed
-                        .as_ref()
-                        .and_then(|m| m.market())
-                        .and_then(|c| reg.read().unwrap().market_partition(c.as_str()));
-                    let stream = parsed.as_ref().map_or("clob_other", stream_of);
-                    match (&part, stream) {
-                        (None, "clob_other") => st.dropped += 1,
-                        _ => {
-                            let p = part.as_ref().unwrap_or(&unknown);
-                            let body = match &parsed {
-                                Some(MarketMsg::PriceChange(_)) if !cfg.keep_hashes => clob_ws::strip_hashes(raw.get()),
-                                _ => raw.get().into(),
-                            };
-                            store.write(p, stream, recv_ns, session, &body).await;
-                        }
-                    }
-                    let Some(msg) = parsed else {
-                        st.unparsed += 1;
-                        continue;
-                    };
-                    let r = books.apply(&msg);
-                    st.pruned += r.pruned.len() as u64;
-                    st.missing += r.missing.len() as u64;
-                    dirty.extend(r.touched);
-                    want_resync.extend(r.missing);
-                }
-                let mut s = stats.lock().unwrap();
-                s.frames += st.frames;
-                s.events += st.events;
-                s.unparsed += st.unparsed;
-                s.dropped += st.dropped;
-                s.pruned += st.pruned;
-                s.missing += st.missing;
+                h.on_event(ev).await;
             }
-            _ = resync_tick.tick() => {
-                // A fresh snapshot may already have fixed the book.
-                want_resync.retain(|t| books.get(t.as_str()).is_some_and(|b| b.needs_resync));
-                let due: Vec<TokenId> = want_resync
-                    .iter()
-                    .filter(|t| last_resync.get(*t).is_none_or(|at| at.elapsed() > RESYNC_EVERY))
-                    .cloned()
-                    .collect();
-                if !due.is_empty() {
-                    mgr.lock().unwrap().resync(&due);
-                    for t in &due {
-                        want_resync.remove(t);
-                        last_resync.insert(t.clone(), Instant::now());
-                    }
-                    stats.lock().unwrap().resyncs += due.len() as u64;
-                }
-                last_resync.retain(|_, at| at.elapsed() < RESYNC_EVERY);
-            }
-            _ = snap.tick(), if cfg.book_snapshot_secs > 0 => {
-                let n = write_snapshots(&store, &reg, &mut books, &mut dirty, cfg.book_snapshot_levels).await;
-                stats.lock().unwrap().snapshots += n;
-            }
+            _ = resync_tick.tick() => h.resync_due(),
+            _ = snap.tick(), if h.cfg.book_snapshot_secs > 0 => h.write_snapshots().await,
         }
     }
 }
 
-async fn write_snapshots(
-    store: &StoreHandle,
-    reg: &SharedRegistry,
-    books: &mut BookSet,
-    dirty: &mut HashSet<TokenId>,
-    levels: usize,
-) -> u64 {
-    let t = now_ns();
-    let mut n = 0;
-    let mut tokens: Vec<TokenId> = dirty.drain().collect();
-    tokens.sort();
-    // Token -> (condition id, partition) for tokens still tracked; books of untracked tokens are
-    // dropped.
-    type Route = Option<(String, Partition)>;
-    let routed: Vec<(TokenId, Route)> = {
-        let r = reg.read().unwrap();
-        let by_token: HashMap<&TokenId, &str> = r
-            .tracked
-            .values()
-            .flat_map(|m| m.token_ids.iter().map(move |t| (t, m.condition_id.as_str())))
-            .collect();
-        books.books.retain(|k, _| by_token.contains_key(k));
-        tokens
-            .into_iter()
-            .map(|tok| {
-                let m = by_token.get(&tok).and_then(|c| Some((c.to_string(), r.market_partition(c)?)));
-                (tok, m)
-            })
-            .collect()
-    };
-    for (tok, m) in routed {
-        let (Some(book), Some((market, part))) = (books.get(tok.as_str()), m) else { continue };
-        if !book.synced {
-            continue;
+struct Handler {
+    store: StoreHandle,
+    reg: SharedRegistry,
+    mgr: SharedClobManager,
+    cfg: ClobSection,
+    stats: SharedClobStats,
+    books: BookSet,
+    /// Tokens whose book changed since the last snapshot.
+    dirty: HashSet<TokenId>,
+    /// Tokens whose book is missing a level and needs a fresh snapshot from the server.
+    want_resync: HashSet<TokenId>,
+    last_resync: HashMap<TokenId, Instant>,
+    unknown: Partition,
+}
+
+impl Handler {
+    async fn on_event(&mut self, ev: WsEvent) {
+        if let Some((conn, up)) = sessions::record(&self.store, "clob", &ev).await {
+            let connected = &mut self.stats.lock().unwrap().connected;
+            if up {
+                connected.insert(conn);
+            } else {
+                connected.remove(&conn);
+            }
+            return;
         }
-        let lv = |side| book.top(side, levels).iter().map(|(p, s)| json!([p, s])).collect::<Vec<_>>();
-        let rec = json!({
-            "asset_id": tok,
-            "market": market,
-            "ts": book.ts_ms,
-            "bids": lv(Side::Buy),
-            "asks": lv(Side::Sell),
-            "n_bids": book.bids.len(),
-            "n_asks": book.asks.len(),
-        });
-        store.write(&part, "book_snapshots", t, 0, &rec.to_string()).await;
-        n += 1;
+        if let WsEvent::Text { session, recv_ns, text } = ev {
+            self.on_frame(session, recv_ns, &text).await;
+        }
     }
-    n
+
+    /// Stores every event of a frame under its market's partition and applies it to the books.
+    async fn on_frame(&mut self, session: u64, recv_ns: i64, text: &str) {
+        let Some(parts) = split_frame(text) else { return };
+        let mut st = ClobStats {
+            frames: 1,
+            ..Default::default()
+        };
+        for raw in parts {
+            st.events += 1;
+            let parsed = serde_json::from_str::<MarketMsg>(raw.get()).ok();
+            let part = parsed
+                .as_ref()
+                .and_then(|m| m.market())
+                .and_then(|c| self.reg.read().unwrap().market_partition(c.as_str()));
+            let stream = parsed.as_ref().map_or("clob_other", stream_of);
+            match (&part, stream) {
+                // Events for markets we don't track (the global `new_market` broadcast).
+                (None, "clob_other") => st.dropped += 1,
+                _ => {
+                    let body = match &parsed {
+                        Some(MarketMsg::PriceChange(_)) if !self.cfg.keep_hashes => clob_ws::strip_hashes(raw.get()),
+                        _ => raw.get().into(),
+                    };
+                    self.store
+                        .write(part.as_ref().unwrap_or(&self.unknown), stream, recv_ns, session, &body)
+                        .await;
+                }
+            }
+            let Some(msg) = parsed else {
+                st.unparsed += 1;
+                continue;
+            };
+            let r = self.books.apply(&msg);
+            st.pruned += r.pruned.len() as u64;
+            st.missing += r.missing.len() as u64;
+            self.dirty.extend(r.touched);
+            self.want_resync.extend(r.missing);
+        }
+        let mut s = self.stats.lock().unwrap();
+        s.frames += st.frames;
+        s.events += st.events;
+        s.unparsed += st.unparsed;
+        s.dropped += st.dropped;
+        s.pruned += st.pruned;
+        s.missing += st.missing;
+    }
+
+    /// Resubscribes tokens whose book is still broken (rate-limited per token).
+    fn resync_due(&mut self) {
+        // A fresh snapshot may already have fixed the book.
+        let books = &self.books;
+        self.want_resync
+            .retain(|t| books.get(t.as_str()).is_some_and(|b| b.needs_resync));
+        let due: Vec<TokenId> = self
+            .want_resync
+            .iter()
+            .filter(|t| self.last_resync.get(*t).is_none_or(|at| at.elapsed() > RESYNC_EVERY))
+            .cloned()
+            .collect();
+        if !due.is_empty() {
+            self.mgr.lock().unwrap().resync(&due);
+            for t in &due {
+                self.want_resync.remove(t);
+                self.last_resync.insert(t.clone(), Instant::now());
+            }
+            self.stats.lock().unwrap().resyncs += due.len() as u64;
+        }
+        self.last_resync.retain(|_, at| at.elapsed() < RESYNC_EVERY);
+    }
+
+    /// Writes the top levels of every book that changed since the last call. Books of tokens no
+    /// longer tracked are dropped.
+    async fn write_snapshots(&mut self) {
+        let t = now_ns();
+        let mut tokens: Vec<TokenId> = self.dirty.drain().collect();
+        tokens.sort();
+        // Token -> (condition id, partition) for tokens still tracked.
+        type Route = Option<(String, Partition)>;
+        let routed: Vec<(TokenId, Route)> = {
+            let r = self.reg.read().unwrap();
+            let by_token: HashMap<&TokenId, &str> = r
+                .tracked
+                .values()
+                .flat_map(|m| m.token_ids.iter().map(move |t| (t, m.condition_id.as_str())))
+                .collect();
+            self.books.books.retain(|k, _| by_token.contains_key(k));
+            tokens
+                .into_iter()
+                .map(|tok| {
+                    let m = by_token
+                        .get(&tok)
+                        .and_then(|c| Some((c.to_string(), r.market_partition(c)?)));
+                    (tok, m)
+                })
+                .collect()
+        };
+        let levels = self.cfg.book_snapshot_levels;
+        let mut n = 0;
+        for (tok, m) in routed {
+            let (Some(book), Some((market, part))) = (self.books.get(tok.as_str()), m) else {
+                continue;
+            };
+            if !book.synced {
+                continue;
+            }
+            let lv = |side| {
+                book.top(side, levels)
+                    .iter()
+                    .map(|(p, s)| json!([p, s]))
+                    .collect::<Vec<_>>()
+            };
+            let rec = json!({
+                "asset_id": tok,
+                "market": market,
+                "ts": book.ts_ms,
+                "bids": lv(Side::Buy),
+                "asks": lv(Side::Sell),
+                "n_bids": book.bids.len(),
+                "n_asks": book.asks.len(),
+            });
+            self.store.write(&part, "book_snapshots", t, 0, &rec.to_string()).await;
+            n += 1;
+        }
+        self.stats.lock().unwrap().snapshots += n;
+    }
 }

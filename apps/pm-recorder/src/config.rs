@@ -11,6 +11,8 @@ pub struct Config {
     /// Root of the recorded data. Relative paths are resolved against the config file's directory.
     pub data_dir: PathBuf,
     #[serde(default)]
+    pub log: LogSection,
+    #[serde(default)]
     pub store: StoreSection,
     #[serde(default)]
     pub discovery: DiscoverySection,
@@ -25,6 +27,27 @@ pub struct Config {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct LogSection {
+    /// `error`, `warn`, `info`, `debug` (or any `RUST_LOG` filter); `RUST_LOG` overrides it.
+    pub level: String,
+    /// Also append the log to this file (relative to the config file). Empty = stdout only.
+    pub file: Option<PathBuf>,
+    /// Status report period.
+    pub status_secs: u64,
+}
+
+impl Default for LogSection {
+    fn default() -> Self {
+        LogSection {
+            level: "info".into(),
+            file: None,
+            status_secs: 60,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct StoreSection {
     pub zstd_level: i32,
     pub flush_secs: u64,
@@ -32,7 +55,10 @@ pub struct StoreSection {
 
 impl Default for StoreSection {
     fn default() -> Self {
-        StoreSection { zstd_level: 6, flush_secs: 5 }
+        StoreSection {
+            zstd_level: 6,
+            flush_secs: 5,
+        }
     }
 }
 
@@ -45,11 +71,19 @@ pub struct DiscoverySection {
     pub end_date_lookback_hours: i64,
     /// Keep recording an event's markets this long after Gamma first reports it `ended`.
     pub ended_grace_secs: u64,
+    /// Only record events starting within this many days (0 = no limit). Events without a start
+    /// time (futures) are not affected. Fixtures are often listed weeks ahead.
+    pub max_days_ahead: u64,
 }
 
 impl Default for DiscoverySection {
     fn default() -> Self {
-        DiscoverySection { interval_secs: 60, end_date_lookback_hours: 24, ended_grace_secs: 1800 }
+        DiscoverySection {
+            interval_secs: 60,
+            end_date_lookback_hours: 24,
+            ended_grace_secs: 1800,
+            max_days_ahead: 0,
+        }
     }
 }
 
@@ -63,8 +97,18 @@ pub struct League {
     /// The sports feed's `leagueAbbreviation` for this league, if it differs from `key`.
     #[serde(default)]
     pub score_league: Option<String>,
-    /// Gamma tag id (use the `/sports` `primaryTagId`, not a tag slug).
-    pub tag_id: u64,
+    /// Gamma tag id (the `/sports` `primaryTagId`, not a tag slug): every event of the league,
+    /// including futures and props.
+    #[serde(default)]
+    pub tag_id: Option<u64>,
+    /// Gamma series id (the `/sports` `series`): the league's match events only. For some leagues
+    /// (Serie A, Champions League, tennis) matches are only found this way. Give `tag_id`,
+    /// `series_id` or both (results are merged).
+    #[serde(default)]
+    pub series_id: Option<u64>,
+    /// Skip events without a start time or game id (futures, season props).
+    #[serde(default)]
+    pub games_only: bool,
     /// Only these `sportsMarketType`s; empty = all.
     #[serde(default)]
     pub include_types: Vec<String>,
@@ -129,7 +173,10 @@ pub struct ActivitySection {
 
 impl Default for ActivitySection {
     fn default() -> Self {
-        ActivitySection { enabled: true, only_tracked: true }
+        ActivitySection {
+            enabled: true,
+            only_tracked: true,
+        }
     }
 }
 
@@ -143,7 +190,10 @@ pub struct SportsSection {
 
 impl Default for SportsSection {
     fn default() -> Self {
-        SportsSection { enabled: true, leagues: vec![] }
+        SportsSection {
+            enabled: true,
+            leagues: vec![],
+        }
     }
 }
 
@@ -151,11 +201,26 @@ impl Config {
     pub fn load(path: &Path) -> Result<Config> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let mut cfg: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let base = path.parent().unwrap_or(Path::new("."));
         if cfg.data_dir.is_relative() {
-            let base = path.parent().unwrap_or(Path::new("."));
             cfg.data_dir = base.join(&cfg.data_dir);
         }
+        cfg.log.file = cfg
+            .log
+            .file
+            .take()
+            .filter(|f| !f.as_os_str().is_empty())
+            .map(|f| base.join(f));
         anyhow::ensure!(!cfg.leagues.is_empty(), "no leagues configured");
+        let mut keys = std::collections::HashSet::new();
+        for l in &cfg.leagues {
+            anyhow::ensure!(
+                l.tag_id.is_some() || l.series_id.is_some(),
+                "league {}: set tag_id and/or series_id",
+                l.key
+            );
+            anyhow::ensure!(keys.insert(l.key.as_str()), "league {} is configured twice", l.key);
+        }
         Ok(cfg)
     }
 }

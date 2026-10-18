@@ -13,6 +13,39 @@ value for `[[leagues]] tag_id` in `config/recorder.toml`.
 - Volumes are seasonal. NBA was in preseason, and NCAAB, IPL and the tennis majors were out of
   season in this window. Re-run the scan below before deciding.
 
+## Configured in `config/recorder.toml`
+
+Sports leagues are found by `series_id` (match events only) and limited to the main market
+types. The table shows 24h volume on open match markets (2026-10-17), split by market type,
+which shows why props are left out.
+
+| key | category | series_id | types recorded | markets (≤7 days) | 24h volume, main types / props & other |
+|---|---|---|---|---|---|
+| nfl | sports | 12185 | moneyline, spreads, totals, first-half ML/spreads/totals | 1,454 | $754k / ~$15k (player props: 3,000+ markets) |
+| cfb | sports | 12756 | moneyline, spreads, totals | 7,095 | $9.5M / ~$70k |
+| nba | sports | 10345 | moneyline, spreads, totals, first-half | 161 | preseason; season starts late Oct |
+| wnba | sports | 10105 | moneyline, spreads, totals | 9 | $151k (finals) |
+| cbb | sports | 10470 | moneyline, spreads, totals | 0 | season starts in November |
+| mlb | sports | 3 | moneyline, spreads, totals, nrfi | 12 | $671k (postseason) |
+| nhl | sports | 10346 | moneyline, spreads, totals | 265 | $722k |
+| epl, lal, sea, bun, fl1 | soccer | 10188, 10193, 10203, 10194, 10195 | moneyline (3-way), spreads, totals, BTTS, half-time result | 230–320 each | EPL $178k, La Liga $377k, Ligue 1 $883k, Bundesliga $40k |
+| ucl, uel | soccer | 10204, 10209 | same | 468 each | match-week dependent |
+| mls, bra, arg | soccer | 10189, 10359, 10312 | same | 340–470 each | MLS $879k, Brazil $123k, Argentina $95k |
+| ufc | sports | 38 | moneyline, totals, goes the distance, method of victory | 222 | $242k |
+| atp, wta | sports | 10365, 10366 | moneyline, match totals, set winner | 261 / 130 | small |
+| crint | sports | 10528 | moneyline | 33 | $511k |
+
+Left out on purpose: F1 (~$1k/day on race markets), EuroLeague (~0), boxing (one card at a
+time), Liga MX (~$17k/day), Nations League and other international soccer (windows only; add
+when one is on), and player props, exact scores and corners everywhere.
+
+Serie A (`sea`), the Champions League (`ucl`) and tennis return almost no matches by `tag_id`:
+their match events carry a different tag. Always prefer `series_id` for sports.
+
+Live-score routing: the score feed's league codes matched the keys for every league seen live
+in the test (`cfb`, `nhl`, `lal`, `arg`, plus the esports leagues). For the others it is not yet
+verified; if one shows up under `other/<code>/scores`, set `score_league = "<code>"`.
+
 ## Esports (category `esports`)
 
 | key | tag_id | 30-day vol | closed events | per event | open events / markets | note |

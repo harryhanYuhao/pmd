@@ -30,6 +30,12 @@ pub struct Fill {
 }
 
 impl Fill {
+    fn add(&mut self, price: Price, size: Size) {
+        self.size += size;
+        self.notional += price.mul_fixed(size);
+        self.last_price = Some(price);
+    }
+
     pub fn vwap(&self) -> Option<f64> {
         (!self.size.is_zero()).then(|| self.notional.to_f64() / self.size.to_f64())
     }
@@ -75,8 +81,7 @@ impl OrderBook {
                 break;
             }
         }
-        let ok =
-            self.best_bid().map(|x| x.0) == best_bid && self.best_ask().map(|x| x.0) == best_ask;
+        let ok = self.best_bid().map(|x| x.0) == best_bid && self.best_ask().map(|x| x.0) == best_ask;
         if !ok {
             self.needs_resync = true;
         }
@@ -116,75 +121,55 @@ impl OrderBook {
     /// Best `n` levels of one side, best first.
     pub fn top(&self, side: Side, n: usize) -> Vec<(Price, Size)> {
         match side {
-            Side::Buy => self
-                .bids
-                .iter()
-                .rev()
-                .take(n)
-                .map(|(p, s)| (*p, *s))
-                .collect(),
+            Side::Buy => self.bids.iter().rev().take(n).map(|(p, s)| (*p, *s)).collect(),
             Side::Sell => self.asks.iter().take(n).map(|(p, s)| (*p, *s)).collect(),
         }
     }
 
-    /// Walks the opposite side as a taker `side` order would, up to `max_size` shares and never
-    /// past `limit` (a buy takes asks ≤ limit, a sell takes bids ≥ limit).
-    pub fn sweep(&self, side: Side, max_size: Size, limit: Option<Price>) -> Fill {
+    /// Levels a taker `side` order can hit, best first, never past `limit` (a buy takes asks
+    /// ≤ limit, a sell takes bids ≥ limit).
+    fn takeable(&self, side: Side, limit: Option<Price>) -> impl Iterator<Item = (Price, Size)> + '_ {
         let levels: Box<dyn Iterator<Item = (&Price, &Size)>> = match side {
             Side::Buy => Box::new(self.asks.iter()),
             Side::Sell => Box::new(self.bids.iter().rev()),
         };
+        levels
+            .map(|(p, s)| (*p, *s))
+            .take_while(move |(p, _)| match (side, limit) {
+                (Side::Buy, Some(l)) => *p <= l,
+                (Side::Sell, Some(l)) => *p >= l,
+                (_, None) => true,
+            })
+    }
+
+    /// Walks the opposite side as a taker `side` order would, up to `max_size` shares and never
+    /// past `limit`.
+    pub fn sweep(&self, side: Side, max_size: Size, limit: Option<Price>) -> Fill {
         let mut f = Fill::default();
-        for (&p, &s) in levels {
-            let beyond = match (side, limit) {
-                (Side::Buy, Some(l)) => p > l,
-                (Side::Sell, Some(l)) => p < l,
-                _ => false,
-            };
-            if beyond || f.size >= max_size {
+        for (p, s) in self.takeable(side, limit) {
+            if f.size >= max_size {
                 break;
             }
-            let take = if s < max_size - f.size {
-                s
-            } else {
-                max_size - f.size
-            };
-            f.size += take;
-            f.notional += p.mul_fixed(take);
-            f.last_price = Some(p);
+            f.add(p, s.min(max_size - f.size));
         }
         f
     }
 
     /// Shares a taker `side` order could get for at most `budget` USDC, never past `limit`.
     pub fn sweep_notional(&self, side: Side, budget: Fixed6, limit: Option<Price>) -> Fill {
-        let levels: Box<dyn Iterator<Item = (&Price, &Size)>> = match side {
-            Side::Buy => Box::new(self.asks.iter()),
-            Side::Sell => Box::new(self.bids.iter().rev()),
-        };
         let mut f = Fill::default();
-        for (&p, &s) in levels {
-            let beyond = match (side, limit) {
-                (Side::Buy, Some(l)) => p > l,
-                (Side::Sell, Some(l)) => p < l,
-                _ => false,
-            };
+        for (p, s) in self.takeable(side, limit) {
             let left = budget - f.notional;
-            if beyond || left <= Fixed6::ZERO || p.is_zero() {
+            if left <= Fixed6::ZERO || p.is_zero() {
                 break;
             }
-            let level_cost = p.mul_fixed(s);
-            let (take, cost) = if level_cost <= left {
-                (s, level_cost)
+            // Whole level if affordable, else the shares `left` buys at this price.
+            let take = if p.mul_fixed(s) <= left {
+                s
             } else {
-                let sh = Fixed6(
-                    (left.raw() as i128 * crate::fixed::SCALE as i128 / p.raw() as i128) as i64,
-                );
-                (sh, p.mul_fixed(sh))
+                Fixed6((left.raw() as i128 * crate::fixed::SCALE as i128 / p.raw() as i128) as i64)
             };
-            f.size += take;
-            f.notional += cost;
-            f.last_price = Some(p);
+            f.add(p, take);
         }
         f
     }
@@ -225,10 +210,7 @@ impl BookSet {
         let mut r = ApplyReport::default();
         match msg {
             MarketMsg::Book(b) => {
-                self.books
-                    .entry(b.asset_id.clone())
-                    .or_default()
-                    .apply_snapshot(b);
+                self.books.entry(b.asset_id.clone()).or_default().apply_snapshot(b);
                 r.touched.push(b.asset_id.clone());
             }
             MarketMsg::PriceChange(pc) => {
@@ -240,11 +222,8 @@ impl BookSet {
                         continue;
                     }
                     book.set_level(c.side, c.price, c.size, pc.timestamp);
-                    if let (Some(bb), Some(ba)) = (
-                        hint(c.best_bid, Fixed6::ZERO),
-                        hint(c.best_ask, Fixed6::ONE),
-                    ) && (book.best_bid().map(|x| x.0) != bb
-                        || book.best_ask().map(|x| x.0) != ba)
+                    if let (Some(bb), Some(ba)) = (hint(c.best_bid, Fixed6::ZERO), hint(c.best_ask, Fixed6::ONE))
+                        && (book.best_bid().map(|x| x.0) != bb || book.best_ask().map(|x| x.0) != ba)
                     {
                         let (pruned, ok) = book.reconcile(bb, ba);
                         if pruned {
@@ -318,10 +297,7 @@ mod tests {
         let f = b.sweep(Side::Buy, px("100"), None);
         assert_eq!(f.size, px("100"));
         assert_eq!(f.notional, px("44")); // 50*0.43 + 50*0.45
-        assert_eq!(
-            b.sweep(Side::Buy, px("100"), Some(px("0.44"))).size,
-            px("50")
-        );
+        assert_eq!(b.sweep(Side::Buy, px("100"), Some(px("0.44"))).size, px("50"));
         let g = b.sweep_notional(Side::Buy, px("30.1"), None);
         assert_eq!(g.size, px("69.111111")); // 50 for 21.5, then 8.6 / 0.45 = 19.111111
         assert_eq!(g.notional, px("30.1"));
@@ -333,17 +309,11 @@ mod tests {
     fn reconcile_prunes_stale_and_flags_missing() {
         let mut b = book();
         // Server says best bid 0.40: our 0.41 is stale.
-        assert_eq!(
-            b.reconcile(Some(px("0.40")), Some(px("0.43"))),
-            (true, true)
-        );
+        assert_eq!(b.reconcile(Some(px("0.40")), Some(px("0.43"))), (true, true));
         assert_eq!(b.best_bid().unwrap().0, px("0.40"));
         assert!(!b.needs_resync);
         // Server says best ask 0.42: we lack that level.
-        assert_eq!(
-            b.reconcile(Some(px("0.40")), Some(px("0.42"))),
-            (false, false)
-        );
+        assert_eq!(b.reconcile(Some(px("0.40")), Some(px("0.42"))), (false, false));
         assert!(b.needs_resync);
     }
 

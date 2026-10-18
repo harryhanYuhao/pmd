@@ -50,14 +50,18 @@ impl Default for StoreConfig {
     }
 }
 
-/// Lines and uncompressed bytes written, per stream.
+/// What has been written for one partition + stream since the store started.
 #[derive(Clone, Debug, Default)]
 pub struct StreamStats {
     pub lines: u64,
+    /// Uncompressed bytes.
     pub bytes: u64,
+    /// Compressed bytes that reached the files (updated on every flush).
+    pub disk_bytes: u64,
 }
 
-type Stats = Arc<Mutex<HashMap<String, StreamStats>>>;
+pub type StatsKey = (Partition, &'static str);
+type Stats = Arc<Mutex<HashMap<StatsKey, StreamStats>>>;
 
 /// The two directory levels under the date: a category (`esports`, `sports`, `_system`, …) and a league
 /// (`cs2`, `dota2`, …). Both are sanitised to `[a-z0-9_-]`. Cheap to clone.
@@ -69,12 +73,26 @@ pub struct Partition {
 
 impl Partition {
     pub fn new(category: &str, league: &str) -> Self {
-        Partition { category: sanitize(category), league: sanitize(league) }
+        Partition {
+            category: sanitize(category),
+            league: sanitize(league),
+        }
+    }
+}
+
+impl std::fmt::Display for Partition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.category, self.league)
     }
 }
 
 enum Cmd {
-    Line { part: Partition, stream: &'static str, t_ns: i64, line: String },
+    Line {
+        part: Partition,
+        stream: &'static str,
+        t_ns: i64,
+        line: String,
+    },
     Tick,
 }
 
@@ -96,13 +114,19 @@ impl StoreHandle {
         line.push_str(",\"m\":");
         line.push_str(payload.trim());
         line.push_str("}\n");
-        let cmd = Cmd::Line { part: part.clone(), stream, t_ns, line };
+        let cmd = Cmd::Line {
+            part: part.clone(),
+            stream,
+            t_ns,
+            line,
+        };
         if self.tx.send(cmd).await.is_err() {
-            tracing::error!(stream, "store writer is gone; dropping record");
+            tracing::error!("store writer is gone; dropping a {stream} record");
         }
     }
 
-    pub fn stats(&self) -> HashMap<String, StreamStats> {
+    /// Per partition + stream totals since start.
+    pub fn stats(&self) -> HashMap<StatsKey, StreamStats> {
         self.stats.lock().map(|s| s.clone()).unwrap_or_default()
     }
 }
@@ -111,7 +135,13 @@ fn sanitize(p: &str) -> Arc<str> {
     let s: String = p
         .chars()
         .map(|c| c.to_ascii_lowercase())
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     Arc::from(if s.is_empty() { "unknown".to_string() } else { s })
 }
@@ -120,6 +150,7 @@ fn sanitize(p: &str) -> Arc<str> {
 /// after producers stopped) to finish every open file cleanly.
 pub struct Store {
     handle: Option<StoreHandle>,
+    stats: Stats,
     thread: Option<std::thread::JoinHandle<Result<()>>>,
     ticker: tokio::task::JoinHandle<()>,
 }
@@ -131,7 +162,12 @@ impl Store {
         let (tx, rx) = mpsc::channel(cfg.channel_capacity);
         let stats: Stats = Arc::default();
         let run = Utc::now().timestamp();
-        let writer = Writer { cfg: cfg.clone(), run, files: HashMap::new(), stats: stats.clone() };
+        let writer = Writer {
+            cfg: cfg.clone(),
+            run,
+            files: HashMap::new(),
+            stats: stats.clone(),
+        };
         let thread = std::thread::Builder::new()
             .name("pm-store".into())
             .spawn(move || writer.run(rx))?;
@@ -146,7 +182,15 @@ impl Store {
                 }
             }
         });
-        Ok(Store { handle: Some(StoreHandle { tx, stats }), thread: Some(thread), ticker })
+        Ok(Store {
+            handle: Some(StoreHandle {
+                tx,
+                stats: stats.clone(),
+            }),
+            stats,
+            thread: Some(thread),
+            ticker,
+        })
     }
 
     pub fn handle(&self) -> StoreHandle {
@@ -154,23 +198,44 @@ impl Store {
     }
 
     /// Stops accepting records once every handle is dropped, drains the queue and finishes all
-    /// files.
-    pub async fn shutdown(mut self) -> Result<()> {
+    /// files. Returns the final per partition + stream totals.
+    pub async fn shutdown(mut self) -> Result<HashMap<StatsKey, StreamStats>> {
         self.ticker.abort();
         let _ = (&mut self.ticker).await;
         self.handle = None;
         let thread = self.thread.take().expect("joined twice");
+        let stats = self.stats.clone();
         tokio::task::spawn_blocking(move || thread.join())
             .await?
-            .map_err(|_| anyhow::anyhow!("store writer panicked"))?
+            .map_err(|_| anyhow::anyhow!("store writer panicked"))??;
+        Ok(stats.lock().map(|s| s.clone()).unwrap_or_default())
+    }
+}
+
+/// File writer that counts the bytes passing through it.
+struct Counting {
+    file: File,
+    n: u64,
+}
+
+impl Write for Counting {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let k = self.file.write(buf)?;
+        self.n += k as u64;
+        Ok(k)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
     }
 }
 
 struct OpenFile {
     hour: i64,
     path: PathBuf,
-    enc: zstd::stream::write::Encoder<'static, BufWriter<File>>,
+    enc: zstd::stream::write::Encoder<'static, BufWriter<Counting>>,
     dirty: bool,
+    /// Bytes of `Counting::n` already added to the stats.
+    reported: u64,
 }
 
 struct Writer {
@@ -184,17 +249,22 @@ impl Writer {
     fn run(mut self, mut rx: mpsc::Receiver<Cmd>) -> Result<()> {
         while let Some(cmd) = rx.blocking_recv() {
             match cmd {
-                Cmd::Line { part, stream, t_ns, line } => {
+                Cmd::Line {
+                    part,
+                    stream,
+                    t_ns,
+                    line,
+                } => {
                     if let Err(e) = self.write_line(part, stream, t_ns, &line) {
-                        tracing::error!(stream, "write failed: {e:#}");
+                        tracing::error!("writing a {stream} record failed: {e:#}");
                     }
                 }
                 Cmd::Tick => self.tick(),
             }
         }
         // All senders gone: finish everything.
-        for (_, f) in self.files.drain() {
-            finish(f);
+        for (k, f) in std::mem::take(&mut self.files) {
+            self.finish(k, f);
         }
         Ok(())
     }
@@ -204,10 +274,9 @@ impl Writer {
         let key = (part, stream);
         // Only roll forward: a record a few ms late for the previous hour goes in the current file.
         let rotate = self.files.get(&key).is_some_and(|f| hour > f.hour);
-        if rotate
-            && let Some(f) = self.files.remove(&key) {
-                finish(f);
-            }
+        if rotate && let Some(f) = self.files.remove(&key) {
+            self.finish(key.clone(), f);
+        }
         if !self.files.contains_key(&key) {
             let f = self.open(&key.0, stream, hour)?;
             self.files.insert(key.clone(), f);
@@ -216,7 +285,7 @@ impl Writer {
         f.enc.write_all(line.as_bytes())?;
         f.dirty = true;
         if let Ok(mut s) = self.stats.lock() {
-            let e = s.entry(stream.to_string()).or_default();
+            let e = s.entry(key).or_default();
             e.lines += 1;
             e.bytes += line.len() as u64;
         }
@@ -236,35 +305,69 @@ impl Writer {
         let path = dir.join(format!("{}.r{}.jsonl.zst", dt.format("%H"), self.run));
         // Append: if this run reopens an hour, the new zstd frame simply follows the old one.
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let enc = zstd::stream::write::Encoder::new(BufWriter::with_capacity(1 << 16, file), self.cfg.zstd_level)?;
-        tracing::debug!(path = %path.display(), "opened");
-        Ok(OpenFile { hour, path, enc, dirty: false })
+        let sink = BufWriter::with_capacity(1 << 16, Counting { file, n: 0 });
+        let enc = zstd::stream::write::Encoder::new(sink, self.cfg.zstd_level)?;
+        tracing::debug!("opened {}", path.display());
+        Ok(OpenFile {
+            hour,
+            path,
+            enc,
+            dirty: false,
+            reported: 0,
+        })
     }
 
     fn tick(&mut self) {
         let now_hour = Utc::now().timestamp().div_euclid(3600);
-        let stale: Vec<_> = self.files.iter().filter(|(_, f)| f.hour < now_hour).map(|(k, _)| k.clone()).collect();
+        let stale: Vec<_> = self
+            .files
+            .iter()
+            .filter(|(_, f)| f.hour < now_hour)
+            .map(|(k, _)| k.clone())
+            .collect();
         for k in stale {
             if let Some(f) = self.files.remove(&k) {
-                finish(f);
+                self.finish(k, f);
             }
         }
-        for f in self.files.values_mut() {
+        let mut written: Vec<(StatsKey, u64)> = Vec::new();
+        for (k, f) in self.files.iter_mut() {
             if f.dirty {
                 if let Err(e) = f.enc.flush() {
-                    tracing::error!(path = %f.path.display(), "flush failed: {e}");
+                    tracing::error!("flush of {} failed: {e}", f.path.display());
                 }
                 f.dirty = false;
+                let n = f.enc.get_ref().get_ref().n;
+                written.push((k.clone(), n - f.reported));
+                f.reported = n;
             }
         }
+        self.add_disk(written);
     }
-}
 
-fn finish(f: OpenFile) {
-    let path = f.path.clone();
-    match f.enc.finish().and_then(|mut w| w.flush()) {
-        Ok(()) => tracing::debug!(path = %path.display(), "closed"),
-        Err(e) => tracing::error!(path = %path.display(), "finish failed: {e}"),
+    fn finish(&mut self, key: StatsKey, f: OpenFile) {
+        let OpenFile {
+            path, enc, reported, ..
+        } = f;
+        match enc.finish().and_then(|mut w| w.flush().map(|_| w)) {
+            Ok(w) => {
+                tracing::debug!("closed {}", path.display());
+                let n = w.get_ref().n;
+                self.add_disk(vec![(key, n - reported)]);
+            }
+            Err(e) => tracing::error!("finishing {} failed: {e}", path.display()),
+        }
+    }
+
+    fn add_disk(&self, written: Vec<(StatsKey, u64)>) {
+        if written.is_empty() {
+            return;
+        }
+        if let Ok(mut s) = self.stats.lock() {
+            for (k, n) in written {
+                s.entry(k).or_default().disk_bytes += n;
+            }
+        }
     }
 }
 
@@ -317,7 +420,11 @@ mod tests {
     async fn roundtrip_and_partitioning() {
         let root = std::env::temp_dir().join(format!("pm-store-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let store = Store::start(StoreConfig { root: root.clone(), ..Default::default() }).unwrap();
+        let store = Store::start(StoreConfig {
+            root: root.clone(),
+            ..Default::default()
+        })
+        .unwrap();
         let h = store.handle();
         let t0 = 1_792_166_400 * 1_000_000_000i64; // 2026-10-16 16:00:00 UTC
         let cs2 = Partition::new("Esports", "CS2");
@@ -327,15 +434,35 @@ mod tests {
         h.write(&cs2, "clob", t0 + HOUR_NS, 2, r#"{"a":3}"#).await;
         h.write(&dota, "clob", t0, 1, r#"[1,2]"#).await;
         drop(h);
-        store.shutdown().await.unwrap();
+        let st = store.shutdown().await.unwrap();
+        let cs2_stats = &st[&(cs2.clone(), "clob")];
+        assert_eq!(cs2_stats.lines, 3);
+        let on_disk: u64 = list_files(&root, &cs2, "clob")
+            .unwrap()
+            .iter()
+            .map(|f| fs::metadata(f).unwrap().len())
+            .sum();
+        assert_eq!(cs2_stats.disk_bytes, on_disk);
 
         let files = list_files(&root, &cs2, "clob").unwrap();
         assert_eq!(files.len(), 2, "{files:?}");
-        assert!(files[0].to_string_lossy().contains("/2026/10/16/esports/cs2/clob/16.r"), "{files:?}");
+        assert!(
+            files[0].to_string_lossy().contains("/2026/10/16/esports/cs2/clob/16.r"),
+            "{files:?}"
+        );
         assert!(files[1].to_string_lossy().contains("/2026/10/16/esports/cs2/clob/17.r"));
         let mut s = String::new();
-        zstd::stream::read::Decoder::new(File::open(&files[0]).unwrap()).unwrap().read_to_string(&mut s).unwrap();
-        assert_eq!(s, format!("{{\"t\":{t0},\"s\":1,\"m\":{{\"a\":1}}}}\n{{\"t\":{},\"s\":1,\"m\":{{\"a\":2}}}}\n", t0 + 10));
+        zstd::stream::read::Decoder::new(File::open(&files[0]).unwrap())
+            .unwrap()
+            .read_to_string(&mut s)
+            .unwrap();
+        assert_eq!(
+            s,
+            format!(
+                "{{\"t\":{t0},\"s\":1,\"m\":{{\"a\":1}}}}\n{{\"t\":{},\"s\":1,\"m\":{{\"a\":2}}}}\n",
+                t0 + 10
+            )
+        );
         let d = list_files(&root, &dota, "clob").unwrap();
         assert!(d[0].to_string_lossy().contains("/2026/10/16/esports/dota_2/clob/"));
         fs::remove_dir_all(&root).unwrap();
