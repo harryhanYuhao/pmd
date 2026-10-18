@@ -1,4 +1,4 @@
-//! `pm audit`: one read-only pass over the recorded files (in parallel), producing a [`Report`]
+//! `pmd audit`: one read-only pass over the recorded files (in parallel), producing a [`Report`]
 //! of what was recorded, which runs and connections had gaps, and which files are damaged.
 
 mod report;

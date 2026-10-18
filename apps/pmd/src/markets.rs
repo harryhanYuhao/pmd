@@ -1,4 +1,4 @@
-//! `pm markets`: a live overview of Polymarket's open events from Gamma: totals, a breakdown by
+//! `pmd markets`: a live overview of Polymarket's open events from Gamma: totals, a breakdown by
 //! category and league, the biggest and the live events, and what the recorder config covers.
 //!
 //! Event-level data only by default (`include_markets=false`: all ~22k open events in ~20 s).
@@ -387,7 +387,7 @@ fn trunc(s: &str, n: usize) -> String {
 impl Overview {
     pub fn render(&self) -> String {
         let mut o = String::new();
-        let _ = writeln!(o, "pm markets  {}  ({})", self.fetched_at, self.scope);
+        let _ = writeln!(o, "pmd markets  {}  ({})", self.fetched_at, self.scope);
         let _ = writeln!(
             o,
             "{} open events, {} live now | 24h volume {} | total volume {} | liquidity {} | open interest {}",

@@ -1332,27 +1332,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
-name = "pm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "pm-api",
- "pm-dataset",
- "pm-recorder",
- "pm-store",
- "rayon",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "zstd",
-]
-
-[[package]]
 name = "pm-api"
 version = "0.1.0"
 dependencies = [
@@ -1434,6 +1413,27 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "pmd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "pm-api",
+ "pm-dataset",
+ "pm-recorder",
+ "pm-store",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]

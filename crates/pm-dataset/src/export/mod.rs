@@ -1,4 +1,4 @@
-//! `pm export`: recorded zstd JSONL → typed, Hive-partitioned Parquet.
+//! `pmd export`: recorded zstd JSONL → typed, Hive-partitioned Parquet.
 //!
 //! ```text
 //! <out>/<table>/date=YYYY-MM-DD/category=<c>/league=<l>/part.parquet   time series

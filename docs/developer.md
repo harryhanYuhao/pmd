@@ -13,12 +13,12 @@ pm-rs/
 │   ├── pm-recorder        the recorder as a library: `pm_recorder::run(cfg, run_for)`
 │   └── pm-dataset         offline tools over recorded files: audit, Parquet export
 ├── apps/
-│   └── pm                 the only binary: clap subcommands, logging setup, `markets`
+│   └── pmd                the only binary: clap subcommands, logging setup, `markets`
 ├── config/recorder.toml
 └── docs/
 ```
 
-Dependency direction: `apps/pm → pm-recorder, pm-dataset → pm-store, pm-ws, pm-api → pm-core`. `pm-core` never does I/O or
+Dependency direction: `apps/pmd → pm-recorder, pm-dataset → pm-store, pm-ws, pm-api → pm-core`. `pm-core` never does I/O or
 async, so the same book and wire code runs in live code, replays and tests.
 
 Planned: `crates/pm-exec` (API-key auth, EIP-712 order signing, place/cancel, user channel) and
@@ -116,10 +116,10 @@ Offline tools over recorded files. Never writes into the recorded data.
   - Bump `SCHEMA_VERSION` whenever a table's columns change: every unit is rebuilt.
 - `fmt`: human-readable sizes, counts, money, durations and UTC times.
 
-### apps/pm
+### apps/pmd
 
 `main.rs` maps subcommands to library calls; offline commands log to stderr and run their
-rayon work under `spawn_blocking`. `markets.rs` is `pm markets`: one `events_raw` call
+rayon work under `spawn_blocking`. `markets.rs` is `pmd markets`: one `events_raw` call
 (`include_markets=false` unless `--markets`), events categorised by the first matching tag in
 `CATEGORIES` and grouped by Gamma `sport` (league), then compared with the recorder config.
 - `StoreHandle::stats()` returns per `(Partition, stream)` lines, raw bytes and on-disk
@@ -147,8 +147,8 @@ all writers ──► StoreHandle ──► pm-store thread
 | `feeds.rs` | RTDS trades (routed by condition id, then event slug) and the sports feed (routed by `leagueAbbreviation`) |
 | `status.rs` | Periodic human-readable status (per-league markets and MB from `StoreHandle::stats`) and the final report |
 | `lib.rs` | `run(cfg, run_for)`: task wiring, signals (Ctrl-C/SIGTERM/SIGHUP), ordered shutdown |
-| `apps/pm/src/logging.rs` | tracing setup: console (stdout for `record`, stderr otherwise) plus an optional file, each on its own non-blocking writer; local-time stamps |
-| `apps/pm/src/main.rs` | CLI: `pm record` flags and config overrides |
+| `apps/pmd/src/logging.rs` | tracing setup: console (stdout for `record`, stderr otherwise) plus an optional file, each on its own non-blocking writer; local-time stamps |
+| `apps/pmd/src/main.rs` | CLI: `pmd record` flags and config overrides |
 
 ### Book integrity
 
@@ -204,9 +204,9 @@ cargo test --workspace -- --ignored          # also the network tests (Gamma, a 
 | where | covers |
 |---|---|
 | unit tests in each module | parsing, sharding (`ClobManager::update`), config validation, routing, report helpers |
-| `crates/pm-dataset/tests/audit.rs` | `pm audit` over a synthetic recording with every kind of problem: runs that pause or overlap, drops, outages, recording gaps, truncated / misplaced / foreign files |
-| `crates/pm-dataset/tests/export.rs` | `pm export` read back from Parquet: columns of every table, nulls, sort order, book replay, incremental runs, failures, and a contract test against the real `pm-store` writer |
-| `apps/pm/tests/cli.rs` | the `pm` binary: exit codes, stdout vs stderr, default paths; `#[ignore]` network tests for `record` and `markets` |
+| `crates/pm-dataset/tests/audit.rs` | `pmd audit` over a synthetic recording with every kind of problem: runs that pause or overlap, drops, outages, recording gaps, truncated / misplaced / foreign files |
+| `crates/pm-dataset/tests/export.rs` | `pmd export` read back from Parquet: columns of every table, nulls, sort order, book replay, incremental runs, failures, and a contract test against the real `pm-store` writer |
+| `apps/pmd/tests/cli.rs` | the `pmd` binary: exit codes, stdout vs stderr, default paths; `#[ignore]` network tests for `record` and `markets` |
 
 `crates/pm-dataset/tests/common` builds recordings in the exact on-disk layout with chosen run
 ids and timestamps (`Fixture::day`, `at(h, m, s)`), plus payload builders shaped like the live
@@ -215,7 +215,7 @@ feeds. Each fixture gets its own temp directory, so tests can run in parallel.
 ## Conventions
 
 - Store server payloads verbatim; derive and normalise offline. Recording and organising are
-  separate steps: `pm export` builds Parquet from finished days only.
+  separate steps: `pmd export` builds Parquet from finished days only.
 - Log messages are sentences for a human reading `tail -f`: put the values in the message
   (`info!("discovery: recording {n} markets")`), not in key=value fields. Routine, high-rate
   events go to `debug!`.

@@ -1,22 +1,22 @@
-# Parquet dataset (`pm export`)
+# Parquet dataset (`pmd export`)
 
-`pm export` converts the recorded zstd JSONL (`data/live`) into typed Parquet tables
+`pmd export` converts the recorded zstd JSONL (`data/live`) into typed Parquet tables
 (`data/parquet`) that pandas, polars, DuckDB and Spark read directly. The raw files stay the
 source of truth: the Parquet tree can be deleted and rebuilt at any time.
 
 ```bash
-./target/release/pm export                                  # every finished day → data/parquet
-./target/release/pm export --from 2026-10-17 --league cs2   # a subset
-./target/release/pm export --tables bbo,clob_trades,tokens  # only some tables
-./target/release/pm export --include-today                  # also today's growing files
-./target/release/pm export --force                          # rebuild even if unchanged
-./target/release/pm export --out /fast/disk/pq --threads 4
+./target/release/pmd export                                  # every finished day → data/parquet
+./target/release/pmd export --from 2026-10-17 --league cs2   # a subset
+./target/release/pmd export --tables bbo,clob_trades,tokens  # only some tables
+./target/release/pmd export --include-today                  # also today's growing files
+./target/release/pmd export --force                          # rebuild even if unchanged
+./target/release/pmd export --out /fast/disk/pq --threads 4
 ```
 
 - **Incremental.** The unit of work is one stream of one league on one day. A unit is rebuilt
   only when its input files (paths and sizes) changed, so re-running after a sync only
   converts the new data. `_manifest.json` in the output root records the inputs of every
-  output. Changing the export schema (a new version of `pm`) rebuilds everything once.
+  output. Changing the export schema (a new version of `pmd`) rebuilds everything once.
 - **Today is skipped** unless `--include-today`, because its files are still growing. Today's
   output is rebuilt on the next run once the day is complete.
 - **Safe to interrupt.** Files are written under a temporary name and renamed when complete.
@@ -159,5 +159,5 @@ time.
 ## Not exported
 
 `clob_other` (`market_resolved` and unknown event types) and `_system/unknown`. Recordings in
-the layout used before 2026-10-17 (`<stream>/<league>/<date>/…`) are ignored; `pm audit` lists
+the layout used before 2026-10-17 (`<stream>/<league>/<date>/…`) are ignored; `pmd audit` lists
 them.

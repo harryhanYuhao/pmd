@@ -3,7 +3,7 @@ data_dir = "../../data/live"
 
 [log]
 level = "info"                     # error | warn | info | debug; RUST_LOG overrides
-file = "../../data/logs/recorder.log"   # also append the log here; "" = stdout only
+dir = "../../data/logs"            # also log to <dir>/YYYY/MM/DD/record.log; "" = stdout only
 status_secs = 60                   # status report period
 
 [store]

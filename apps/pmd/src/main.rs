@@ -1,4 +1,4 @@
-//! `pm`: Polymarket data tools. Each subcommand is a thin wrapper around a library crate.
+//! `pmd`: Polymarket data tools. Each subcommand is a thin wrapper around a library crate.
 
 mod logging;
 mod markets;
@@ -42,11 +42,11 @@ struct RecordArgs {
     /// Stop after this many seconds (for smoke tests).
     #[arg(long)]
     run_for: Option<u64>,
-    /// Also append the log to this file (overrides `[log] file`).
+    /// Also write the log under this directory, as `YYYY/MM/DD/record.log` (overrides `[log] dir`).
     #[arg(long)]
-    log_file: Option<PathBuf>,
-    /// Write the log to stdout only, even if the config names a file.
-    #[arg(long, conflicts_with = "log_file")]
+    log_dir: Option<PathBuf>,
+    /// Write the log to stdout only, even if the config names a log directory.
+    #[arg(long, conflicts_with = "log_dir")]
     no_log_file: bool,
 }
 
@@ -58,9 +58,9 @@ impl RecordArgs {
             cfg.data_dir = d.clone();
         }
         if self.no_log_file {
-            cfg.log.file = None;
-        } else if let Some(f) = &self.log_file {
-            cfg.log.file = Some(f.clone());
+            cfg.log.dir = None;
+        } else if let Some(d) = &self.log_dir {
+            cfg.log.dir = Some(d.clone());
         }
         Ok(cfg)
     }
@@ -226,7 +226,7 @@ async fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Record(args) => {
             let cfg = args.config()?;
-            let _log = logging::init(&cfg.log.level, Console::Stdout, cfg.log.file.as_deref())?;
+            let _log = logging::init(&cfg.log.level, Console::Stdout, cfg.log.dir.as_deref())?;
             pm_recorder::run(cfg, args.run_for.map(Duration::from_secs)).await
         }
         Cmd::Audit(args) => {

@@ -1,14 +1,14 @@
 # pm-rs — Polymarket data tools (and future trader)
 
 A Cargo workspace. Shared library crates hold everything a live trader will also need; one
-binary, `pm`, exposes them as subcommands:
+binary, `pmd`, exposes them as subcommands:
 
 | command | does |
 |---|---|
-| `pm record` | record order books, trades, metadata and live scores for configured leagues |
-| `pm audit` | summarise recorded data: size, runs, connection drops, gaps, damage |
-| `pm export` | convert recorded data to partitioned Parquet for analysis |
-| `pm markets` | live overview of Polymarket: open / live events, volume by category and league |
+| `pmd record` | record order books, trades, metadata and live scores for configured leagues |
+| `pmd audit` | summarise recorded data: size, runs, connection drops, gaps, damage |
+| `pmd export` | convert recorded data to partitioned Parquet for analysis |
+| `pmd markets` | live overview of Polymarket: open / live events, volume by category and league |
 
 Docs: [quick start](docs/README.md) · [usage](docs/usage.md) (every command) ·
 [Parquet dataset](docs/dataset.md) · [developer guide](docs/developer.md) ·
@@ -26,7 +26,7 @@ pm-rs/
 │   ├── pm-recorder the recorder (discovery, feeds, status) as a library
 │   └── pm-dataset offline tools over recorded files: audit, Parquet export
 ├── apps/
-│   └── pm         the CLI: `pm record | audit | export | markets`
+│   └── pmd        the CLI: `pmd record | audit | export | markets`
 └── config/recorder.toml
 ```
 
@@ -40,9 +40,9 @@ identical files.
 
 ```bash
 cargo build --release
-./target/release/pm record --config config/recorder.toml            # runs until Ctrl-C / SIGTERM / SIGHUP
-./target/release/pm record --data-dir /tmp/x --run-for 120           # smoke test
-RUST_LOG=debug ./target/release/pm record ...                        # file open/close detail
+./target/release/pmd record --config config/recorder.toml            # runs until Ctrl-C / SIGTERM / SIGHUP
+./target/release/pmd record --data-dir /tmp/x --run-for 120           # smoke test
+RUST_LOG=debug ./target/release/pmd record ...                        # file open/close detail
 ```
 
 For unattended recording run it in tmux. The loop restarts it 10 s after a crash; each restart
@@ -50,7 +50,7 @@ starts new files, so nothing is overwritten:
 
 ```bash
 tmux new -d -s recorder 'cd ~/trading/polymarket-explore-claude/pm-rs && \
-  while true; do ./target/release/pm record --config config/recorder.toml; sleep 10; done'
+  while true; do ./target/release/pmd record --config config/recorder.toml; sleep 10; done'
 tmux attach -t recorder      # watch the status line (every minute); detach with Ctrl-b d
 tmux kill-session -t recorder
 ```

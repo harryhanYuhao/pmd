@@ -1,12 +1,12 @@
-//! The `pm` binary end to end: arguments, exit codes, what goes to stdout vs stderr, defaults.
-//! Tests that need the network are `#[ignore]`d: `cargo test -p pm -- --ignored` runs them.
+//! The `pmd` binary end to end: arguments, exit codes, what goes to stdout vs stderr, defaults.
+//! Tests that need the network are `#[ignore]`d: `cargo test -p pmd -- --ignored` runs them.
 
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const BIN: &str = env!("CARGO_BIN_EXE_pm");
+const BIN: &str = env!("CARGO_BIN_EXE_pmd");
 /// 2026-10-17 10:00:00 UTC, ns.
 const T10: i64 = 1_792_231_200 * 1_000_000_000;
 
@@ -27,7 +27,7 @@ impl Drop for Dir {
     }
 }
 
-fn pm(args: &[&str], cwd: &Path) -> Output {
+fn pmd(args: &[&str], cwd: &Path) -> Output {
     Command::new(BIN).args(args).current_dir(cwd).output().unwrap()
 }
 
@@ -78,12 +78,12 @@ fn config(dir: &Path) -> PathBuf {
 #[test]
 fn help_lists_every_command() {
     let d = Dir::new("help");
-    let o = pm(&["--help"], &d.0);
+    let o = pmd(&["--help"], &d.0);
     assert!(o.status.success());
     for c in ["record", "audit", "export", "markets"] {
         assert!(stdout(&o).contains(c), "{c} missing from help");
     }
-    let o = pm(&["frobnicate"], &d.0);
+    let o = pmd(&["frobnicate"], &d.0);
     assert!(!o.status.success());
 }
 
@@ -91,7 +91,7 @@ fn help_lists_every_command() {
 fn audit_json_is_clean_on_stdout() {
     let d = Dir::new("audit-json");
     let root = record(&d.0);
-    let o = pm(&["audit", "--data-dir", root.to_str().unwrap(), "--json"], &d.0);
+    let o = pmd(&["audit", "--data-dir", root.to_str().unwrap(), "--json"], &d.0);
     assert!(o.status.success(), "{}", stderr(&o));
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("stdout is only the JSON report");
     assert_eq!(v["totals"]["records"], 2);
@@ -103,11 +103,11 @@ fn audit_finds_the_data_root_through_the_config() {
     let d = Dir::new("audit-config");
     record(&d.0);
     config(&d.0);
-    let o = pm(&["audit"], &d.0);
+    let o = pmd(&["audit"], &d.0);
     assert!(o.status.success(), "{}", stderr(&o));
     assert!(stdout(&o).contains("2 records in 2 files"), "{}", stdout(&o));
 
-    let o = pm(&["audit", "--config", "missing.toml"], &d.0);
+    let o = pmd(&["audit", "--config", "missing.toml"], &d.0);
     assert!(!o.status.success());
     assert!(stderr(&o).contains("missing.toml"), "{}", stderr(&o));
 }
@@ -117,11 +117,11 @@ fn bad_arguments_are_rejected() {
     let d = Dir::new("bad-args");
     let root = record(&d.0);
     let r = root.to_str().unwrap();
-    let o = pm(&["audit", "--data-dir", r, "--from", "17/10/2026"], &d.0);
+    let o = pmd(&["audit", "--data-dir", r, "--from", "17/10/2026"], &d.0);
     assert!(!o.status.success());
     assert!(stderr(&o).contains("--from"));
 
-    let o = pm(&["export", "--data-dir", r, "--tables", "bbo,nope"], &d.0);
+    let o = pmd(&["export", "--data-dir", r, "--tables", "bbo,nope"], &d.0);
     assert!(!o.status.success());
     let e = stderr(&o);
     assert!(
@@ -129,7 +129,7 @@ fn bad_arguments_are_rejected() {
         "{e}"
     );
 
-    let o = pm(&["record", "--log-file", "a.log", "--no-log-file"], &d.0);
+    let o = pmd(&["record", "--log-dir", "logs", "--no-log-file"], &d.0);
     assert!(!o.status.success(), "conflicting flags");
 }
 
@@ -138,7 +138,7 @@ fn export_defaults_next_to_the_data_and_is_incremental() {
     let d = Dir::new("export");
     let root = record(&d.0);
     let r = root.to_str().unwrap();
-    let o = pm(&["export", "--data-dir", r], &d.0);
+    let o = pmd(&["export", "--data-dir", r], &d.0);
     assert!(o.status.success(), "{}", stderr(&o));
     assert!(
         stdout(&o).starts_with("exported 1 units (0 unchanged)"),
@@ -152,7 +152,7 @@ fn export_defaults_next_to_the_data_and_is_incremental() {
     );
     assert!(out.join("tokens.parquet").is_file());
 
-    let o = pm(&["export", "--data-dir", r], &d.0);
+    let o = pmd(&["export", "--data-dir", r], &d.0);
     assert!(
         stdout(&o).starts_with("exported 0 units (1 unchanged)"),
         "{}",
@@ -165,7 +165,7 @@ fn export_only_dimension_tables() {
     let d = Dir::new("export-dims");
     let root = record(&d.0);
     let out = d.0.join("pq");
-    let o = pm(
+    let o = pmd(
         &[
             "export",
             "--data-dir",
@@ -190,7 +190,7 @@ fn record_reports_a_bad_config() {
         "data_dir = \"x\"\n[[leagues]]\ncategory = \"esports\"\nkey = \"cs2\"\n",
     )
     .unwrap();
-    let o = pm(&["record", "--config", "bad.toml"], &d.0);
+    let o = pmd(&["record", "--config", "bad.toml"], &d.0);
     assert!(!o.status.success());
     assert!(stderr(&o).contains("set tag_id and/or series_id"), "{}", stderr(&o));
 }
@@ -200,7 +200,7 @@ fn record_reports_a_bad_config() {
 fn record_smoke_test() {
     let d = Dir::new("record");
     let cfg = config(&d.0);
-    let o = pm(
+    let o = pmd(
         &[
             "record",
             "--config",
@@ -217,7 +217,7 @@ fn record_smoke_test() {
         log.contains("discovery: recording") && log.contains("all files closed"),
         "{log}"
     );
-    let audit = pm(
+    let audit = pmd(
         &["audit", "--data-dir", d.0.join("data/live").to_str().unwrap(), "--json"],
         &d.0,
     );
@@ -234,7 +234,7 @@ fn record_smoke_test() {
 #[ignore = "network: queries Gamma"]
 fn markets_esports_overview() {
     let d = Dir::new("markets");
-    let o = pm(&["markets", "--category", "esports", "--no-config", "--json"], &d.0);
+    let o = pmd(&["markets", "--category", "esports", "--no-config", "--json"], &d.0);
     assert!(o.status.success(), "{}", stderr(&o));
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert!(v["events"].as_u64().unwrap() > 0);

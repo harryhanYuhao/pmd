@@ -550,7 +550,7 @@ impl Report {
         } else {
             0.0
         };
-        let _ = writeln!(o, "pm audit  {}", self.root);
+        let _ = writeln!(o, "pmd audit  {}", self.root);
         let _ = writeln!(
             o,
             "{} records in {} files, {} on disk ({} raw, {:.1}x), {} runs, {} .. {}",

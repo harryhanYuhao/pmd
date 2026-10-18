@@ -1,4 +1,4 @@
-//! `pm export` end to end: synthetic recordings in, Parquet read back and checked.
+//! `pmd export` end to end: synthetic recordings in, Parquet read back and checked.
 
 mod common;
 

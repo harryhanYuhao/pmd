@@ -1,5 +1,5 @@
 //! pm-recorder: records Polymarket order books, trades, market metadata and live scores for the
-//! configured leagues. See the workspace README for the data layout. Run it with `pm record`.
+//! configured leagues. See the workspace README for the data layout. Run it with `pmd record`.
 
 mod clob;
 pub mod config;
@@ -116,8 +116,8 @@ fn log_startup(cfg: &Config) {
         leagues.join(", ")
     );
     tracing::info!("data -> {}", cfg.data_dir.display());
-    if let Some(f) = &cfg.log.file {
-        tracing::info!("log  -> {} (and stdout)", f.display());
+    if let Some(d) = &cfg.log.dir {
+        tracing::info!("log  -> {}/YYYY/MM/DD/record.log (and stdout)", d.display());
     }
     let feeds: Vec<&str> = [
         (cfg.clob.enabled, "order books"),

@@ -1,5 +1,5 @@
 [package]
-name = "pm"
+name = "pmd"
 description = "Polymarket data tools: record live feeds, audit and export recordings, inspect live markets"
 version.workspace = true
 edition.workspace = true

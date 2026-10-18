@@ -30,8 +30,9 @@ pub struct Config {
 pub struct LogSection {
     /// `error`, `warn`, `info`, `debug` (or any `RUST_LOG` filter); `RUST_LOG` overrides it.
     pub level: String,
-    /// Also append the log to this file (relative to the config file). Empty = stdout only.
-    pub file: Option<PathBuf>,
+    /// Also write the log under this directory (relative to the config file), one file per local
+    /// day: `<dir>/YYYY/MM/DD/record.log`. Empty = stdout only.
+    pub dir: Option<PathBuf>,
     /// Status report period.
     pub status_secs: u64,
 }
@@ -40,7 +41,7 @@ impl Default for LogSection {
     fn default() -> Self {
         LogSection {
             level: "info".into(),
-            file: None,
+            dir: None,
             status_secs: 60,
         }
     }
@@ -205,9 +206,9 @@ impl Config {
         if cfg.data_dir.is_relative() {
             cfg.data_dir = base.join(&cfg.data_dir);
         }
-        cfg.log.file = cfg
+        cfg.log.dir = cfg
             .log
-            .file
+            .dir
             .take()
             .filter(|f| !f.as_os_str().is_empty())
             .map(|f| base.join(f));
@@ -245,7 +246,7 @@ mod tests {
     fn relative_paths_resolve_against_the_config_file() {
         let cfg = load(
             "paths",
-            &format!("data_dir = \"../data/live\"\n[log]\nfile = \"../logs/r.log\"\n{LEAGUE}"),
+            &format!("data_dir = \"../data/live\"\n[log]\ndir = \"../logs\"\n{LEAGUE}"),
         )
         .unwrap();
         assert!(
@@ -253,13 +254,13 @@ mod tests {
             "{}",
             cfg.data_dir.display()
         );
-        assert!(cfg.log.file.unwrap().ends_with("config/../logs/r.log"));
+        assert!(cfg.log.dir.unwrap().ends_with("config/../logs"));
 
         let abs = load("abs", &format!("data_dir = \"/srv/data\"\n{LEAGUE}")).unwrap();
         assert_eq!(abs.data_dir, Path::new("/srv/data"));
-        assert!(abs.log.file.is_none(), "no [log] file by default");
-        let empty = load("empty-log", &format!("data_dir = \"d\"\n[log]\nfile = \"\"\n{LEAGUE}")).unwrap();
-        assert!(empty.log.file.is_none(), "\"\" means stdout only");
+        assert!(abs.log.dir.is_none(), "no [log] dir by default");
+        let empty = load("empty-log", &format!("data_dir = \"d\"\n[log]\ndir = \"\"\n{LEAGUE}")).unwrap();
+        assert!(empty.log.dir.is_none(), "\"\" means stdout only");
     }
 
     #[test]

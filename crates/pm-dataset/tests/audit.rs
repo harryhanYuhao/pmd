@@ -1,4 +1,4 @@
-//! `pm audit` end to end over a synthetic recording that contains every kind of problem the
+//! `pmd audit` end to end over a synthetic recording that contains every kind of problem the
 //! report is meant to surface.
 
 mod common;
