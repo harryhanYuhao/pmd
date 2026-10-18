@@ -1,6 +1,6 @@
 # pm-rs docs
 
-[Usage guide](usage.md) · [Parquet dataset](dataset.md) · [developer guide](developer.md) ·
+[Usage guide](usage.md) · [raw data format](data-format.md) · [Parquet dataset](dataset.md) · [developer guide](developer.md) ·
 [leagues](leagues.md) · [data tools plan](plan-data-tools.md)
 
 ## Quick start

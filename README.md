@@ -11,7 +11,7 @@ binary, `pmd`, exposes them as subcommands:
 | `pmd markets` | live overview of Polymarket: open / live events, volume by category and league |
 
 Docs: [quick start](docs/README.md) · [usage](docs/usage.md) (every command) ·
-[Parquet dataset](docs/dataset.md) · [developer guide](docs/developer.md) ·
+[raw data format](docs/data-format.md) · [Parquet dataset](docs/dataset.md) · [developer guide](docs/developer.md) ·
 [leagues worth recording](docs/leagues.md).
 
 ```

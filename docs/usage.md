@@ -230,6 +230,7 @@ e.g. data/live/2026/10/17/esports/cs2/clob_book/06.r1792219759.jsonl.zst
 
 Each line has the form `{"t": receive_ns, "s": session_id, "m": <message as received>}`. The one
 change from the server's message is that the opaque `hash` fields are stripped from `price_change`.
+Every field of every stream, with examples: [data-format.md](data-format.md).
 
 ### Reading
 
