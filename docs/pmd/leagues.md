@@ -1,7 +1,7 @@
 # Leagues worth recording
 
 A snapshot taken on **2026-10-17** from Gamma (`/sports`, `/events`). The `tag_id` column is the
-value for `[[leagues]] tag_id` in `config/recorder.toml`.
+value for `[[leagues]] tag_id` in `config/pmd.toml`.
 
 - **30-day volume:** the summed Gamma `volume` (in USDC) of events that closed between
   2026-09-17 and 2026-10-17. Gamma's lifetime figure includes pre-game trading and can include
@@ -13,7 +13,7 @@ value for `[[leagues]] tag_id` in `config/recorder.toml`.
 - Volumes are seasonal. NBA was in preseason, and NCAAB, IPL and the tennis majors were out of
   season in this window. Re-run the scan below before deciding.
 
-## Configured in `config/recorder.toml`
+## Configured in `config/pmd.toml`
 
 Sports leagues are found by `series_id` (match events only) and limited to the main market
 types. The table shows 24h volume on open match markets (2026-10-17), split by market type,

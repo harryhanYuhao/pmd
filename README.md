@@ -12,7 +12,7 @@ binary, `pmd`, exposes them as subcommands:
 
 Docs: [quick start](docs/README.md) · [usage](docs/usage.md) (every command) ·
 [raw data format](docs/data-format.md) · [Parquet dataset](docs/dataset.md) · [developer guide](docs/developer.md) ·
-[leagues worth recording](docs/leagues.md).
+[leagues worth recording](docs/pmd/leagues.md).
 
 ```
 pm-rs/
@@ -27,7 +27,7 @@ pm-rs/
 │   └── pm-dataset offline tools over recorded files: audit, Parquet export
 ├── apps/
 │   └── pmd        the CLI: `pmd record | audit | export | markets`
-└── config/recorder.toml
+└── config/pmd.toml
 ```
 
 Planned for trading (same workspace): `crates/pm-exec` (API-key auth, EIP-712 order signing,
@@ -40,7 +40,7 @@ identical files.
 
 ```bash
 cargo build --release
-./target/release/pmd record --config config/recorder.toml            # runs until Ctrl-C / SIGTERM / SIGHUP
+./target/release/pmd record --config config/pmd.toml            # runs until Ctrl-C / SIGTERM / SIGHUP
 ./target/release/pmd record --data-dir /tmp/x --run-for 120           # smoke test
 RUST_LOG=debug ./target/release/pmd record ...                        # file open/close detail
 ```
@@ -50,7 +50,7 @@ starts new files, so nothing is overwritten:
 
 ```bash
 tmux new -d -s recorder 'cd ~/trading/polymarket-explore-claude/pm-rs && \
-  while true; do ./target/release/pmd record --config config/recorder.toml; sleep 10; done'
+  while true; do ./target/release/pmd record --config config/pmd.toml; sleep 10; done'
 tmux attach -t recorder      # watch the status line (every minute); detach with Ctrl-b d
 tmux kill-session -t recorder
 ```

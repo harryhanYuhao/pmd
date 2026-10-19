@@ -34,7 +34,7 @@ enum Cmd {
 
 #[derive(Args)]
 struct RecordArgs {
-    #[arg(short, long, default_value = "config/recorder.toml")]
+    #[arg(short, long, default_value = "config/pmd.toml")]
     config: PathBuf,
     /// Override `data_dir` from the config.
     #[arg(long)]
@@ -73,7 +73,7 @@ struct DataArgs {
     #[arg(long)]
     data_dir: Option<PathBuf>,
     /// Recorder config, used only to find the data root.
-    #[arg(short, long, default_value = "config/recorder.toml")]
+    #[arg(short, long, default_value = "config/pmd.toml")]
     config: PathBuf,
     /// First day (UTC), YYYY-MM-DD.
     #[arg(long)]
@@ -211,7 +211,7 @@ struct MarketsArgs {
     #[arg(long, default_value_t = 15)]
     top: usize,
     /// Recorder config, to show which leagues are recorded.
-    #[arg(short, long, default_value = "config/recorder.toml")]
+    #[arg(short, long, default_value = "config/pmd.toml")]
     config: PathBuf,
     /// Do not compare with the recorder config.
     #[arg(long)]

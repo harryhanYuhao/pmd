@@ -1,13 +1,13 @@
 # pmd — user guide
 
-`pmd` is one binary with a subcommand per task:
+`pmd` binary is a `cli` tool that has different subcommands for tasks:
 
-| command | what it does | status |
-|---|---|---|
-| `pmd record` | records Polymarket order books, trades (with wallets), market metadata and live game scores for a configurable list of leagues, into compressed hourly files | ready |
-| `pmd audit` | summarises recorded data: size, runs, connection drops, gaps, damaged files. Read-only | ready |
-| `pmd export` | converts recorded data into partitioned Parquet tables for analysis | ready |
-| `pmd markets` | live overview of Polymarket: open / live events, volume, by category and league | ready |
+| command | what it does |
+|---|---|
+| `pmd record` | continuously records live Polymarket order books, trades (with wallets), market metadata and live game scores for a configurable list of leagues, into compressed hourly files |
+| `pmd audit` | summarises recorded data: size, runs, connection drops, gaps, damaged files. Read-only |
+| `pmd export` | converts recorded data into partitioned Parquet tables for analysis |
+| `pmd markets` | live overview of Polymarket: open / live events, volume, by category and league |
 
 `pmd --help` and `pmd <command> --help` list every flag.
 
@@ -29,7 +29,7 @@ cargo test --workspace             # optional
 ## 2. Record
 
 ```bash
-./target/release/pmd record                                     # uses config/recorder.toml
+./target/release/pmd record                                     # uses config/pmd.toml
 ./target/release/pmd record --config my.toml                    # other config
 ./target/release/pmd record --data-dir /tmp/x --run-for 120     # smoke test: 2 min into /tmp/x
 ./target/release/pmd record --log-dir /tmp/logs                  # log to stdout and /tmp/logs/YYYY/MM/DD/
@@ -38,7 +38,7 @@ RUST_LOG=debug ./target/release/pmd record                      # also log file 
 
 | flag | default | meaning |
 |---|---|---|
-| `-c, --config` | `config/recorder.toml` | config file (relative to the current directory) |
+| `-c, --config` | `config/pmd.toml` | config file (relative to the current directory) |
 | `--data-dir` | config `data_dir` | override the output root |
 | `--run-for <secs>` | until stopped | stop after N seconds |
 | `--log-dir <dir>` | config `[log] dir` | also write the log to `<dir>/YYYY/MM/DD/record.log` |
@@ -58,12 +58,6 @@ tmux kill-session -t recorder  # clean stop (SIGHUP)
 
 The loop restarts the recorder after a crash. Each run writes new files (the `r<run>` suffix),
 so a restart never overwrites earlier data.
-
-> **Upgrading from `pm-recorder` or `pm`:** the recorder used to be its own binary,
-> `target/release/pm-recorder`, and then `pm record`. Building no longer updates either, but
-> neither is deleted, so an old tmux loop keeps running the stale version. Change the loop to
-> `pmd record` (as above), restart the session, and delete the old binaries:
-> `rm -f target/release/pm target/release/pm-recorder`.
 
 ### Log
 
@@ -119,7 +113,7 @@ recorder logs the total records and bytes written.
 
 ## 3. Configure
 
-The config is `config/recorder.toml`, and every field is commented there. Relative paths are
+The config is `config/pmd.toml`, and every field is commented there. Relative paths are
 resolved against the config file's directory. Unknown keys are rejected, so typos fail at startup.
 
 ```toml
@@ -285,7 +279,7 @@ Logs go to stderr, the report to stdout.
 | flag | default | meaning |
 |---|---|---|
 | `--data-dir` | config `data_dir` | recorded data root |
-| `-c, --config` | `config/recorder.toml` | used to find `data_dir` |
+| `-c, --config` | `config/pmd.toml` | used to find `data_dir` |
 | `--from`, `--to` | all | UTC days, `YYYY-MM-DD`, inclusive |
 | `--category`, `--league`, `--stream` | all | comma-separated or repeated |
 | `--threads` | all cores (export: at most 8) | worker threads |
@@ -336,7 +330,7 @@ threads. Lower `--threads` if memory is tight.
 | `--live` | only events in play right now |
 | `--markets` | also fetch every market: open markets, order books, `sportsMarketType` breakdown. ~14x more data; combine with `--category` |
 | `--top <n>` | rows in the league and event lists (default 15) |
-| `--no-config` | skip the comparison with `config/recorder.toml` |
+| `--no-config` | skip the comparison with `config/pmd.toml` |
 
 Volumes are Gamma's figures (USDC). An event's category is the first of its tags in this order:
 esports, sports, crypto, politics / elections, geopolitics, finance / economy / business, tech,
@@ -346,7 +340,7 @@ culture, science, weather, world; anything else is `other`.
 
 | symptom | cause / fix |
 |---|---|
-| `parsing config/recorder.toml: unknown field` | a typo, or a key in the wrong section |
+| `parsing config/pmd.toml: unknown field` | a typo, or a key in the wrong section |
 | `no leagues configured` | at least one `[[leagues]]` block is required |
 | a league records 0 markets | wrong `tag_id` (a slug tag rather than `primaryTagId`); try `series_id`; no open events right now; or the season has not started (`cbb`) |
 | scores land in `other/<abbr>` instead of your league | set `score_league = "<abbr>"` on that league |

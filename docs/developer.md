@@ -14,7 +14,7 @@ pm-rs/
 │   └── pm-dataset         offline tools over recorded files: audit, Parquet export
 ├── apps/
 │   └── pmd                the only binary: clap subcommands, logging setup, `markets`
-├── config/recorder.toml
+├── config/pmd.toml
 └── docs/
 ```
 
@@ -179,7 +179,7 @@ markers to `registry::system("<feed>")`), route each message to a `Partition`, a
 task in `lib.rs` with `cancel`.
 
 **Add a config option:** add the field to the section struct and its `Default`, and document it
-in `config/recorder.toml`. `deny_unknown_fields` makes old binaries reject new keys, which is
+in `config/pmd.toml`. `deny_unknown_fields` makes old binaries reject new keys, which is
 intentional.
 
 **Reuse in a trader:**

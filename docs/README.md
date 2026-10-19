@@ -1,7 +1,6 @@
 # pm-rs docs
 
-[Usage guide](usage.md) · [raw data format](data-format.md) · [Parquet dataset](dataset.md) · [developer guide](developer.md) ·
-[leagues](leagues.md) · [data tools plan](plan-data-tools.md)
+[pmd: data tool](pmd/README.md) · [developer guide](developer.md) 
 
 ## Quick start
 
@@ -10,8 +9,8 @@ Build once from `pm-rs/`; everything runs through the one binary, `target/releas
 ```bash
 cargo build --release
 
-# Record (runs until Ctrl-C; config/recorder.toml sets the leagues and data_dir)
-./target/release/pmd record --config config/recorder.toml
+# Record (runs until Ctrl-C; config/pmd.toml sets the leagues and data_dir)
+./target/release/pmd record --config config/pmd.toml
 ./target/release/pmd record --data-dir /tmp/x --run-for 60    # 1-minute smoke test
 
 # Unattended on a server: restarts after a crash, `tmux kill-session -t recorder` stops it cleanly

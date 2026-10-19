@@ -1,4 +1,4 @@
-//! Recorder configuration (TOML). See `config/recorder.toml` for a documented example.
+//! Recorder configuration (TOML). See `config/pmd.toml` for a documented example.
 
 use std::path::{Path, PathBuf};
 
@@ -233,7 +233,7 @@ mod tests {
     fn load(name: &str, text: &str) -> Result<Config> {
         let dir = std::env::temp_dir().join(format!("pm-recorder-config-{name}-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("config")).unwrap();
-        let path = dir.join("config/recorder.toml");
+        let path = dir.join("config/pmd.toml");
         std::fs::write(&path, text).unwrap();
         let cfg = Config::load(&path);
         std::fs::remove_dir_all(&dir).unwrap();

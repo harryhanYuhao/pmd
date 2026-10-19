@@ -65,7 +65,7 @@ fn record(dir: &Path) -> PathBuf {
 }
 
 fn config(dir: &Path) -> PathBuf {
-    let cfg = dir.join("config/recorder.toml");
+    let cfg = dir.join("config/pmd.toml");
     fs::create_dir_all(cfg.parent().unwrap()).unwrap();
     fs::write(
         &cfg,
