@@ -1,7 +1,7 @@
-# pm-rs — Polymarket data tools (and future trader)
+# pm-rs — Polymarket data tools and trading bot
 
-A Cargo workspace. Shared library crates hold everything a live trader will also need; one
-binary, `pmd`, exposes them as subcommands:
+A Cargo workspace. Shared library crates hold the domain logic; two binaries use them. `pmd`
+(data tools) has these subcommands:
 
 | command | does |
 |---|---|
@@ -10,8 +10,12 @@ binary, `pmd`, exposes them as subcommands:
 | `pmd export` | convert recorded data to partitioned Parquet for analysis |
 | `pmd markets` | live overview of Polymarket: open / live events, volume by category and league |
 
-Docs: [quick start](docs/README.md) · [usage](docs/usage.md) (every command) ·
-[raw data format](docs/data-format.md) · [Parquet dataset](docs/dataset.md) · [developer guide](docs/developer.md) ·
+`pmt` (trading bot) runs pluggable strategies with shared risk limits and a journal; paper
+trading for now. Runs stop on a schedule by winding down safely, so new builds can be deployed
+between runs. See the [pmt design](docs/pmt/design.md) and [strategies](docs/pmt/trading_algo/).
+
+Docs: [quick start](docs/README.md) · [usage](docs/pmd/usage.md) (every command) ·
+[raw data format](docs/pmd/data-format.md) · [Parquet dataset](docs/pmd/dataset.md) · [developer guide](docs/developer.md) ·
 [leagues worth recording](docs/pmd/leagues.md).
 
 ```
@@ -21,20 +25,20 @@ pm-rs/
 │   │              MarketInfo, L2 OrderBook/BookSet (+ sweep/fill simulation, reconciliation)
 │   ├── pm-api     REST clients: Gamma (metadata), CLOB public (books), Data API (trades)
 │   ├── pm-ws      resilient websocket session: reconnect/backoff, keepalive, idle detection,
-│   │              resubscribe on every connect, session ids for gap tracking
+│   │              resubscribe on every connect, session ids for gap tracking; ClobManager
+│   │              (market channel sharded over connections)
 │   ├── pm-store   hour-partitioned zstd JSONL writer on a dedicated thread
 │   ├── pm-recorder the recorder (discovery, feeds, status) as a library
-│   └── pm-dataset offline tools over recorded files: audit, Parquet export
+│   ├── pm-dataset offline tools over recorded files: audit, Parquet export
+│   └── pm-app     process plumbing for the binaries: logging, shutdown signals
 ├── apps/
-│   └── pmd        the CLI: `pmd record | audit | export | markets`
-└── config/pmd.toml
+│   ├── pmd        the data CLI: `pmd record | audit | export | markets`
+│   └── pmt        the trading bot: `pmt run | check | strategies`
+└── config/pmd.toml, config/pmt.toml
 ```
 
-Planned for trading (same workspace): `crates/pm-exec` (API-key auth, EIP-712 order signing,
-order placement/cancel, user websocket channel) and `apps/pm-trader`. A trader reuses `pm-ws` +
-`pm-core::book` for market data, `pm-api` for metadata, and `pm-store` to journal its own
-decisions and fills in the same format as the recorded data, so backtests and live runs read
-identical files.
+Planned: `crates/pm-exec` (API-key auth, EIP-712 order signing, order placement/cancel, user
+websocket channel), which turns on `pmt`'s live mode.
 
 ## Run
 

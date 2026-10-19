@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use pm_core::{Fixed6, MarketInfo, TokenId};
+use pm_core::{FeeSchedule, Fixed6, MarketInfo, TokenId};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -48,6 +48,9 @@ pub struct GammaMarket {
     pub clob_token_ids: Option<String>,
     pub outcome_prices: Option<String>,
     pub sports_market_type: Option<String>,
+    /// Short label within the event: `Match Winner`, `Map 1 Winner`, `O/U 2.5 Games`, …
+    #[serde(deserialize_with = "lenient")]
+    pub group_item_title: Option<String>,
     pub game_start_time: Option<String>,
     pub active: bool,
     pub closed: bool,
@@ -56,6 +59,10 @@ pub struct GammaMarket {
     pub order_price_min_tick_size: Option<f64>,
     pub order_min_size: Option<f64>,
     pub neg_risk: Option<bool>,
+    #[serde(deserialize_with = "lenient")]
+    pub fees_enabled: Option<bool>,
+    #[serde(deserialize_with = "lenient")]
+    pub fee_schedule: Option<FeeSchedule>,
     pub updated_at: Option<String>,
 }
 
@@ -69,6 +76,12 @@ impl GammaEvent {
     pub fn is_game(&self) -> bool {
         self.game_id.is_some() || self.start().is_some()
     }
+}
+
+/// `None` instead of an error when a value has an unexpected shape, so that a change in a field
+/// only the trader reads can never make a whole event unparseable.
+fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> Result<Option<T>, D::Error> {
+    Ok(Option::<Value>::deserialize(d)?.and_then(|v| serde_json::from_value(v).ok()))
 }
 
 /// Gamma times are RFC 3339, but sometimes with a space for `T` and an offset like `+00`.
@@ -109,6 +122,20 @@ impl GammaMarket {
             && self.enable_order_book.unwrap_or(false)
             && self.accepting_orders.unwrap_or(true)
             && self.token_ids().len() == 2
+    }
+
+    /// Index of the winning outcome once the market is closed (its outcome price is 1).
+    pub fn winner(&self) -> Option<usize> {
+        if !self.closed {
+            return None;
+        }
+        let p = self.outcome_prices();
+        (p.len() == 2).then(|| p.iter().position(|&x| x > 0.99)).flatten()
+    }
+
+    /// Taker fees, if the market charges them.
+    pub fn fees(&self) -> Option<FeeSchedule> {
+        self.fee_schedule.filter(|_| self.fees_enabled.unwrap_or(true))
     }
 
     pub fn to_info(&self, league: &str, ev: &GammaEvent) -> MarketInfo {
@@ -225,6 +252,42 @@ impl Gamma {
         Ok(out)
     }
 
+    /// Open events of one league (by tag and/or series, merged by event id) whose `endDate` is at
+    /// or after `end_date_min` (RFC 3339).
+    pub async fn league_events(
+        &self,
+        tag_id: Option<u64>,
+        series_id: Option<u64>,
+        end_date_min: &str,
+    ) -> Result<Vec<Value>> {
+        let queries = [
+            tag_id.map(|t| EventsQuery {
+                tag_id: Some(t),
+                ..Default::default()
+            }),
+            series_id.map(|s| EventsQuery {
+                series_id: Some(s),
+                ..Default::default()
+            }),
+        ];
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for q in queries.into_iter().flatten() {
+            let q = EventsQuery {
+                closed: Some(false),
+                end_date_min: Some(end_date_min.to_string()),
+                ..q
+            };
+            for v in self.events_raw(&q).await? {
+                let id = v.get("id").map(|i| i.to_string()).unwrap_or_default();
+                if seen.insert(id) {
+                    out.push(v);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub async fn events(&self, q: &EventsQuery) -> Result<Vec<GammaEvent>> {
         Ok(self
             .events_raw(q)
@@ -248,7 +311,9 @@ mod tests {
                 "outcomes": "[\"A\", \"B\"]", "clobTokenIds": "[\"11\", \"22\"]",
                 "outcomePrices": "[\"0.4\", \"0.6\"]", "sportsMarketType": "moneyline",
                 "active": true, "closed": false, "acceptingOrders": true, "enableOrderBook": true,
-                "orderPriceMinTickSize": 0.001, "volume": "123.4"
+                "orderPriceMinTickSize": 0.001, "volume": "123.4", "groupItemTitle": "Match Winner",
+                "feesEnabled": true,
+                "feeSchedule": {"exponent": 1, "rate": 0.03, "takerOnly": true, "rebateRate": 0.25}
             }]
         });
         let e: GammaEvent = serde_json::from_value(v).unwrap();
@@ -259,6 +324,34 @@ mod tests {
         assert_eq!(info.token_ids[1].as_str(), "22");
         assert_eq!(info.tick_size.unwrap().to_string(), "0.001");
         assert_eq!(info.game_id, Some(7));
+        assert_eq!(m.group_item_title.as_deref(), Some("Match Winner"));
+        assert_eq!(m.fees().unwrap().rate, 0.03);
+        assert_eq!(m.winner(), None, "open");
+    }
+
+    #[test]
+    fn odd_fee_fields_do_not_break_an_event() {
+        let v = serde_json::json!({
+            "id": "1", "markets": [{"conditionId": "0xab", "feeSchedule": {"rate": "0.03"},
+                "feesEnabled": "yes", "groupItemTitle": 5}]
+        });
+        let e: GammaEvent = serde_json::from_value(v).unwrap();
+        let m = &e.markets[0];
+        assert_eq!(m.condition_id, "0xab");
+        assert!(m.fee_schedule.is_none() && m.fees_enabled.is_none() && m.group_item_title.is_none());
+    }
+
+    #[test]
+    fn winner_of_a_closed_market() {
+        let m = |closed: bool, prices: &str| GammaMarket {
+            closed,
+            outcome_prices: Some(prices.into()),
+            ..Default::default()
+        };
+        assert_eq!(m(true, "[\"0\", \"1\"]").winner(), Some(1));
+        assert_eq!(m(true, "[\"1\", \"0\"]").winner(), Some(0));
+        assert_eq!(m(true, "[\"0.5\", \"0.5\"]").winner(), None, "not resolved yet");
+        assert_eq!(m(false, "[\"1\", \"0\"]").winner(), None);
     }
 
     #[test]

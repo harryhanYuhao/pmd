@@ -1346,6 +1346,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pm-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "pm-core"
 version = "0.1.0"
 dependencies = [
@@ -1378,6 +1390,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "pm-api",
+ "pm-app",
  "pm-core",
  "pm-store",
  "pm-ws",
@@ -1408,6 +1421,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-util",
+ "pm-core",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
@@ -1423,6 +1437,7 @@ dependencies = [
  "chrono",
  "clap",
  "pm-api",
+ "pm-app",
  "pm-dataset",
  "pm-recorder",
  "pm-store",
@@ -1431,8 +1446,27 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
+ "zstd",
+]
+
+[[package]]
+name = "pmt"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "pm-api",
+ "pm-app",
+ "pm-core",
+ "pm-store",
+ "pm-ws",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
  "zstd",
 ]
 

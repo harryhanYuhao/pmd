@@ -63,6 +63,28 @@ impl Fixed6 {
     pub fn complement(self) -> Fixed6 {
         Fixed6(SCALE - self.0)
     }
+
+    /// Largest multiple of `step` at or below `self` (e.g. a price on the tick grid). A
+    /// non-positive `step` returns `self`.
+    pub fn floor_to(self, step: Fixed6) -> Fixed6 {
+        if step.0 <= 0 {
+            return self;
+        }
+        Fixed6(self.0.div_euclid(step.0) * step.0)
+    }
+
+    /// Smallest multiple of `step` at or above `self`.
+    pub fn ceil_to(self, step: Fixed6) -> Fixed6 {
+        if step.0 <= 0 {
+            return self;
+        }
+        Fixed6(-((-self.0).div_euclid(step.0) * step.0))
+    }
+
+    /// `self / other` for two fixed-point numbers (e.g. USDC / price = shares), rounded down.
+    pub fn div_fixed(self, other: Fixed6) -> Option<Fixed6> {
+        (other.0 != 0).then(|| Fixed6((self.0 as i128 * SCALE as i128 / other.0 as i128) as i64))
+    }
 }
 
 impl std::ops::Add for Fixed6 {
@@ -221,5 +243,15 @@ mod tests {
         let s: Fixed6 = "55.03".parse().unwrap();
         assert_eq!(p.mul_fixed(s).to_string(), "37.4204");
         assert_eq!(p.complement().to_string(), "0.32");
+        let tick: Fixed6 = "0.01".parse().unwrap();
+        let x: Fixed6 = "0.845".parse().unwrap();
+        assert_eq!(x.floor_to(tick).to_string(), "0.84");
+        assert_eq!(x.ceil_to(tick).to_string(), "0.85");
+        assert_eq!(p.floor_to(tick), p, "already on the grid");
+        assert_eq!(
+            Fixed6::from_raw(5_000_000).div_fixed(p).unwrap().to_string(),
+            "7.352941"
+        );
+        assert!(p.div_fixed(Fixed6::ZERO).is_none());
     }
 }

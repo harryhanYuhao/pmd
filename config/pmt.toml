@@ -1,0 +1,79 @@
+# pmt (trading bot) configuration. Relative paths are resolved against this file's directory.
+journal_dir = "../../data/pmt"   # decisions, orders, fills, settlements (pm-store layout)
+mode = "paper"                   # paper = simulated fills on live books; live is not implemented yet
+
+# Ending a run. At the stop time no new trades start (orders in markets a strategy is not in yet);
+# trades in progress continue, and the program exits once nothing is in progress. Ctrl-C / SIGTERM
+# / SIGHUP does the same at once; a second signal stops immediately (working orders cancelled).
+# Positions held to resolution do not keep it running: a restart picks them up from the journal.
+[run]
+run_for = "3d"                   # "3d", "12h", "90m" or seconds; leave out to run until stopped
+drain_timeout = "4h"             # wait at most this long for trades in progress, then stop anyway
+
+[log]
+level = "info"                   # error | warn | info | debug; RUST_LOG overrides
+dir = "../../data/logs"          # also log to <dir>/YYYY/MM/DD/trade.log; "" = stdout only
+status_secs = 300                # status report period
+
+[universe]
+interval_secs = 60               # Gamma poll period
+max_hours_ahead = 24             # only events starting within this many hours
+end_date_lookback_hours = 24
+max_assets_per_conn = 250        # tokens per market-channel connection
+
+[history]
+max_trades = 3000                # Data API trades loaded per market; more = "truncated"
+
+# Hard limits on every order, whatever the strategy. USDC.
+[risk]
+max_order_usdc = 10              # one order, at its limit price
+max_daily_usdc = 100             # new buys per UTC day (filled + resting)
+max_open_usdc = 300              # unresolved positions + resting buys
+halt = false                     # true rejects every order
+
+# Leagues to watch (ids from https://gamma-api.polymarket.com/sports). Strategies pick from these.
+[[leagues]]
+key = "cs2"
+tag_id = 100780
+
+[[leagues]]
+key = "dota2"
+tag_id = 102366
+
+[[leagues]]
+key = "lol"
+tag_id = 65
+
+# Strategies: `kind` picks the algorithm (`pmt strategies` lists them), `id` names this instance
+# (default: kind), every other key is a parameter. Unset parameters take the defaults shown.
+# Keys every strategy accepts:
+#   enabled = false        turn it off
+#   entry_cutoff = "3h"    no new trades this long before the scheduled stop (for algorithms that
+#                          trade in and out during a game and must not be cut off mid-way)
+
+# docs/pmt/trading_algo/01_cs2_map_longshot.md
+[[strategy]]
+kind = "cs2_map_longshot"
+id = "c1"
+leagues = ["cs2"]
+min_price = 0.05                 # signal band for either team's implied price
+max_price = 0.30
+max_trade_age_secs = 30          # the last trade must be this fresh
+tick_secs = 60                   # check period from the series start
+slippage = 0.02                  # taker limit = price + this
+stake_usdc = 2.0
+max_watch_hours = 6
+
+# docs/pmt/trading_algo/02_thin_favourite.md
+[[strategy]]
+kind = "thin_favourite"
+id = "fav"
+leagues = ["cs2", "dota2", "lol"]
+lead_secs = 300                  # decide at start - 5 min
+min_price = 0.80                 # favourite's displayed price band
+max_price = 0.90
+max_pregame_usdc = 3000          # USDC traded before the decision must be below this
+execution = "taker"              # taker | maker
+taker_window_secs = 600          # taker: keep trying this long after the decision
+slippage = 0.01                  # taker: limit = displayed price + this
+stake_usdc = 5.0

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use pm_api::{EventsQuery, Gamma, GammaEvent};
+use pm_api::{Gamma, GammaEvent};
 use pm_core::{ConditionId, MarketInfo, TokenId, now_ns};
 use pm_store::{Partition, StoreHandle};
 use serde_json::Value;
@@ -221,37 +221,10 @@ impl Discovery {
         let mut tasks = Vec::new();
         for lg in &self.cfg.leagues {
             let (gamma, sem, end_min) = (self.gamma.clone(), sem.clone(), end_min.clone());
-            let queries: Vec<EventsQuery> = [
-                lg.tag_id.map(|t| EventsQuery {
-                    tag_id: Some(t),
-                    ..Default::default()
-                }),
-                lg.series_id.map(|s| EventsQuery {
-                    series_id: Some(s),
-                    ..Default::default()
-                }),
-            ]
-            .into_iter()
-            .flatten()
-            .map(|q| EventsQuery {
-                closed: Some(false),
-                end_date_min: Some(end_min.clone()),
-                ..q
-            })
-            .collect();
+            let (tag, series) = (lg.tag_id, lg.series_id);
             tasks.push(tokio::spawn(async move {
                 let _permit = sem.acquire_owned().await?;
-                let mut seen = HashSet::new();
-                let mut out = Vec::new();
-                for q in queries {
-                    for v in gamma.events_raw(&q).await? {
-                        let id = v.get("id").map(|i| i.to_string()).unwrap_or_default();
-                        if seen.insert(id) {
-                            out.push(v);
-                        }
-                    }
-                }
-                anyhow::Ok(out)
+                gamma.league_events(tag, series, &end_min).await
             }));
         }
         let mut out = Vec::new();

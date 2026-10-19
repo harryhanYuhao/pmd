@@ -11,7 +11,7 @@ pub mod wire;
 pub use book::{BookSet, Fill, OrderBook};
 pub use fixed::{Fixed6, Price, Size};
 pub use ids::{ConditionId, Side, TokenId};
-pub use market::MarketInfo;
+pub use market::{FeeSchedule, MarketInfo};
 
 /// Wall-clock time in Unix nanoseconds.
 pub fn now_ns() -> i64 {

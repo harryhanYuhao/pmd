@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+pm-core.workspace = true
 anyhow.workspace = true
 futures-util.workspace = true
 serde_json.workspace = true

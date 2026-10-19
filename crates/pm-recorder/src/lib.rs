@@ -41,7 +41,12 @@ pub async fn run(cfg: Config, run_for: Option<Duration>) -> Result<()> {
     let clob_stats = clob::SharedClobStats::default();
     let clob_mgr = cfg.clob.enabled.then(|| {
         let (tx, rx) = mpsc::channel(50_000);
-        let mgr = Arc::new(Mutex::new(clob::ClobManager::new(&cfg.clob, tx, cancel.clone())));
+        let mgr = Arc::new(Mutex::new(clob::ClobManager::new(
+            cfg.clob.max_assets_per_conn,
+            cfg.clob.custom_features,
+            tx,
+            cancel.clone(),
+        )));
         let handler = clob::run_handler(
             rx,
             store.handle(),
@@ -93,11 +98,11 @@ pub async fn run(cfg: Config, run_for: Option<Duration>) -> Result<()> {
 
     match run_for {
         Some(d) => tokio::time::sleep(d).await,
-        None => shutdown_signal().await,
+        None => pm_app::shutdown_signal().await,
     }
     tracing::info!("shutting down: finishing files...");
     cancel.cancel();
-    stop_tasks(tasks).await;
+    pm_app::stop_tasks(tasks).await;
     let totals = store.shutdown().await?;
     status::final_report(&totals, started.elapsed());
     tracing::info!("all files closed");
@@ -128,34 +133,4 @@ fn log_startup(cfg: &Config) {
     .filter_map(|(on, name)| on.then_some(name))
     .collect();
     tracing::info!("feeds: {}", feeds.join(", "));
-}
-
-/// Waits for every task after cancellation (they hold store handles, so the store can only finish
-/// once they are gone); a task that does not stop within 10 s is aborted.
-async fn stop_tasks(tasks: Vec<(&str, tokio::task::JoinHandle<()>)>) {
-    for (name, mut t) in tasks {
-        if tokio::time::timeout(Duration::from_secs(10), &mut t).await.is_err() {
-            tracing::warn!("{name} task did not stop in time; aborting");
-            t.abort();
-            let _ = t.await;
-        }
-    }
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = tokio::signal::ctrl_c();
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut term = signal(SignalKind::terminate()).expect("SIGTERM");
-        // tmux kill-session / closing the terminal sends SIGHUP.
-        let mut hup = signal(SignalKind::hangup()).expect("SIGHUP");
-        tokio::select! {
-            _ = ctrl_c => {}
-            _ = term.recv() => {}
-            _ = hup.recv() => {}
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = ctrl_c.await;
 }

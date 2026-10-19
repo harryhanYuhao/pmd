@@ -118,6 +118,15 @@ impl OrderBook {
         Some(self.best_ask()?.0 - self.best_bid()?.0)
     }
 
+    /// The price Polymarket displays: the midpoint, unless the spread is wider than 10¢ (or a side
+    /// is empty), in which case the last trade price.
+    pub fn display_price(&self, last_trade: Option<Price>) -> Option<Price> {
+        match (self.best_bid(), self.best_ask()) {
+            (Some((b, _)), Some((a, _))) if a - b <= Fixed6::from_raw(100_000) => Some(Fixed6((a.0 + b.0) / 2)),
+            _ => last_trade,
+        }
+    }
+
     /// Best `n` levels of one side, best first.
     pub fn top(&self, side: Side, n: usize) -> Vec<(Price, Size)> {
         match side {
@@ -303,6 +312,17 @@ mod tests {
         assert_eq!(g.notional, px("30.1"));
         b.set_level(Side::Sell, px("0.43"), Fixed6::ZERO, 2);
         assert_eq!(b.best_ask().unwrap().0, px("0.45"));
+    }
+
+    #[test]
+    fn display_price_is_the_mid_unless_the_spread_is_wide() {
+        let mut b = book();
+        assert_eq!(b.display_price(Some(px("0.9"))), Some(px("0.42")));
+        b.set_level(Side::Sell, px("0.43"), Fixed6::ZERO, 2);
+        b.set_level(Side::Sell, px("0.45"), Fixed6::ZERO, 2);
+        b.set_level(Side::Sell, px("0.60"), px("1"), 2);
+        assert_eq!(b.display_price(Some(px("0.5"))), Some(px("0.5")), "spread 19c");
+        assert_eq!(OrderBook::default().display_price(None), None);
     }
 
     #[test]

@@ -11,20 +11,21 @@ pm-rs/
 │   ├── pm-ws              resilient websocket sessions
 │   ├── pm-store           append-only zstd JSONL store
 │   ├── pm-recorder        the recorder as a library: `pm_recorder::run(cfg, run_for)`
-│   └── pm-dataset         offline tools over recorded files: audit, Parquet export
+│   ├── pm-dataset         offline tools over recorded files: audit, Parquet export
+│   └── pm-app             process plumbing: logging setup, shutdown signals, stopping tasks
 ├── apps/
-│   └── pmd                the only binary: clap subcommands, logging setup, `markets`
-├── config/pmd.toml
+│   ├── pmd                data tools: clap subcommands, `markets`
+│   └── pmt                trading bot (see pmt/design.md)
+├── config/pmd.toml, config/pmt.toml
 └── docs/
 ```
 
-Dependency direction: `apps/pmd → pm-recorder, pm-dataset → pm-store, pm-ws, pm-api → pm-core`. `pm-core` never does I/O or
+Dependency direction: `apps/pmd → pm-recorder, pm-dataset → pm-store, pm-ws, pm-api → pm-core`;
+`apps/pmt → pm-store, pm-ws, pm-api → pm-core`; both apps and the recorder use `pm-app`. `pm-core` never does I/O or
 async, so the same book and wire code runs in live code, replays and tests.
 
-Planned: `crates/pm-exec` (API-key auth, EIP-712 order signing, place/cancel, user channel) and
-`apps/pm-trader`. A trader should reuse `pm-ws` + `pm-core::book` for market data, `pm-api` for
-metadata, and `pm-store` to journal its own decisions and fills in the same format as recorded
-data.
+Planned: `crates/pm-exec` (API-key auth, EIP-712 order signing, place/cancel, user channel), a
+live `Venue` for `pmt`. The trader's design and how to add a strategy: [pmt/design.md](pmt/design.md).
 
 ## Crates
 
@@ -51,7 +52,9 @@ the `RawValue`s returned by `split_frame`.
   end_date_min, include_markets, … }`). Pages with the cursor endpoint `/events/keyset`
   (`after_cursor`): `/events` rejects offsets above 2000. `include_markets: Some(false)` drops
   the embedded markets (~14x less data);
-  `GammaMarket::to_info` builds a `MarketInfo`. `GammaEvent::start()` / `is_game()` and
+  `GammaMarket::to_info` builds a `MarketInfo`; `winner()` and `fees()` (`FeeSchedule`) read the
+  resolution and taker fees. `Gamma::league_events(tag_id, series_id, end_date_min)` fetches a
+  league's open events (tag and series merged), as used by the recorder and `pmt`. `GammaEvent::start()` / `is_game()` and
   `gamma::parse_time` handle Gamma's start-time formats.
 - `Clob::book`, `Clob::server_time`.
 - `DataApi::trades` (offset ≤ 10k, ~1.4 req/s sustained).
@@ -71,6 +74,10 @@ let (handle, task) = pm_ws::spawn(spec, Arc::new(|| vec![subscribe_msg()]), tx, 
 `WsEvent::{Connected, Text{session, recv_ns, text}, Disconnected}` to `tx`. It reconnects with
 exponential backoff. Each connection gets a process-unique `session` id, which is used to detect
 gaps. `handle.send(text)` sends a message on the live connection (dynamic subscribe).
+
+`clob::ClobManager::new(max_per_conn, custom_features, tx, cancel)` keeps the CLOB market channel
+for a changing token set: `update(add, remove)` fills existing connections before opening new
+ones, `resync(tokens)` re-requests snapshots. Used by the recorder and `pmt`.
 
 ### pm-store
 
@@ -142,12 +149,12 @@ all writers ──► StoreHandle ──► pm-store thread
 | `config.rs` | TOML schema (`deny_unknown_fields`, defaults per section) |
 | `registry.rs` | `Registry`: tracked markets, plus market/event/score-league → `Partition` routing. Constants `SYSTEM = "_system"`, `OTHER = "other"` |
 | `discovery.rs` | Polls each league's open events: `fetch_all` (tag + series, 4 leagues at a time) → `process_event` (scope filters, records `gamma_events` on fingerprint change or every 6 h and `markets` on change) → `update_tracked` (diff; leagues whose fetch failed keep their markets) → `log_changes` |
-| `clob.rs` | `ClobManager` shards tokens and (un)subscribes dynamically. `run_handler` drives a `Handler`: `on_frame` stores events by stream and updates the `BookSet`, `resync_due` re-requests broken books, `write_snapshots` |
+| `clob.rs` | `ClobManager` (in `pm-ws::clob`, shared with `pmt`) shards tokens and (un)subscribes dynamically. `run_handler` drives a `Handler`: `on_frame` stores events by stream and updates the `BookSet`, `resync_due` re-requests broken books, `write_snapshots` |
 | `sessions.rs` | Connect/disconnect markers to `_system/<feed>/sessions`, shared by all feeds |
 | `feeds.rs` | RTDS trades (routed by condition id, then event slug) and the sports feed (routed by `leagueAbbreviation`) |
 | `status.rs` | Periodic human-readable status (per-league markets and MB from `StoreHandle::stats`) and the final report |
 | `lib.rs` | `run(cfg, run_for)`: task wiring, signals (Ctrl-C/SIGTERM/SIGHUP), ordered shutdown |
-| `apps/pmd/src/logging.rs` | tracing setup: console (stdout for `record`, stderr otherwise) plus an optional file, each on its own non-blocking writer; local-time stamps |
+| `crates/pm-app/src/logging.rs` | tracing setup: console (stdout for `record`, stderr otherwise) plus an optional daily file (`record.log`, `trade.log`), each on its own non-blocking writer; local-time stamps |
 | `apps/pmd/src/main.rs` | CLI: `pmd record` flags and config overrides |
 
 ### Book integrity

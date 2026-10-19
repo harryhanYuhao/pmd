@@ -1,5 +1,5 @@
-//! Log output: always the console (stdout for `pmd record`, stderr for commands whose report goes
-//! to stdout), optionally also appended to a file per local day, `<dir>/YYYY/MM/DD/record.log`
+//! Log output: always the console (stdout for long-running commands, stderr for commands whose
+//! report goes to stdout), optionally also appended to a file per local day, `<dir>/YYYY/MM/DD/<name>`
 //! (same lines, no colours). Each sink has its own writer thread, so a stalled stdout (dead ssh
 //! session, paused terminal) cannot hold up the file or the tasks that log; stdout lines are
 //! dropped instead.
@@ -32,9 +32,16 @@ pub enum Console {
     Stderr,
 }
 
+/// A daily log file: `<dir>/YYYY/MM/DD/<name>`.
+pub struct LogFile<'a> {
+    pub dir: &'a Path,
+    /// e.g. `record.log`.
+    pub name: &'static str,
+}
+
 /// Installs the global subscriber. `RUST_LOG` overrides `level`. Keep the returned guards alive
 /// until exit: dropping them flushes the console and the file.
-pub fn init(level: &str, console: Console, dir: Option<&Path>) -> Result<Vec<WorkerGuard>> {
+pub fn init(level: &str, console: Console, file: Option<LogFile<'_>>) -> Result<Vec<WorkerGuard>> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
     let (ansi, (out, stdout_guard)) = match console {
         Console::Stdout => (
@@ -51,9 +58,9 @@ pub fn init(level: &str, console: Console, dir: Option<&Path>) -> Result<Vec<Wor
         .with_target(false)
         .with_ansi(ansi)
         .with_writer(out);
-    let (file_layer, guard) = match dir {
-        Some(dir) => {
-            let mut daily = DailyFile::new(dir, "record.log");
+    let (file_layer, guard) = match file {
+        Some(LogFile { dir, name }) => {
+            let mut daily = DailyFile::new(dir, name);
             // Open today's file now, so that an unwritable log directory fails at startup.
             daily.open(today())?;
             let (w, guard) = tracing_appender::non_blocking(daily);

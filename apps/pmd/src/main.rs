@@ -1,6 +1,5 @@
 //! `pmd`: Polymarket data tools. Each subcommand is a thin wrapper around a library crate.
 
-mod logging;
 mod markets;
 
 use std::path::PathBuf;
@@ -9,9 +8,8 @@ use std::time::Duration;
 use anyhow::Result;
 use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand};
+use pm_app::logging::{self, Console, LogFile};
 use pm_store::read::Filter;
-
-use crate::logging::Console;
 
 #[derive(Parser)]
 #[command(about = "Polymarket data tools: record live feeds, audit and export recordings")]
@@ -226,7 +224,11 @@ async fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Record(args) => {
             let cfg = args.config()?;
-            let _log = logging::init(&cfg.log.level, Console::Stdout, cfg.log.dir.as_deref())?;
+            let file = cfg.log.dir.as_deref().map(|dir| LogFile {
+                dir,
+                name: "record.log",
+            });
+            let _log = logging::init(&cfg.log.level, Console::Stdout, file)?;
             pm_recorder::run(cfg, args.run_for.map(Duration::from_secs)).await
         }
         Cmd::Audit(args) => {

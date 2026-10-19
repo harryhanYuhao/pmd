@@ -14,6 +14,7 @@ pm-ws = { path = "crates/pm-ws" }
 pm-store = { path = "crates/pm-store" }
 pm-recorder = { path = "crates/pm-recorder" }
 pm-dataset = { path = "crates/pm-dataset" }
+pm-app = { path = "crates/pm-app" }
 
 anyhow = "1"
 thiserror = "2"

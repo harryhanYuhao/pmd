@@ -1,0 +1,14 @@
+[package]
+name = "pm-app"
+description = "Process plumbing shared by the binaries: logging, shutdown signals, stopping tasks"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
